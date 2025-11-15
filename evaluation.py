@@ -149,6 +149,7 @@ def auto_evaluate_test(section, doc_id, df, responses):
 def compute_grand_total(roll):
     total = 0
     for section, doc_id in student_map[roll]:
+        st.write("DEBUG SECTION:", section)
         doc = db.collection("student_responses").document(doc_id).get().to_dict()
         if doc and "Evaluation" in doc and "final_total" in doc["Evaluation"]:
             total += doc["Evaluation"]["final_total"]
