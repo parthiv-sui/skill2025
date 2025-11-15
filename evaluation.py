@@ -113,6 +113,35 @@ def calc_mcq(df, responses):
 def calc_likert(df, responses):
     total = 0
     for r in responses:
+        qid = str(r["QuestionID"]).strip()
+        ans = r["Response"]
+
+        st.write("CHECKING:", qid)
+
+        row_df = df[df["QuestionID"].astype(str).str.strip() == qid]
+
+        st.write("MATCHED ROW COUNT:", len(row_df))
+
+        if row_df.empty:
+            st.write("NO MATCH FOUND FOR:", qid)
+            continue
+
+        row = row_df.iloc[0]
+        if row["Type"].strip().lower() != "likert":
+            st.write("NOT LIKERT:", qid)
+            continue
+
+        try:
+            score = likert_to_score(int(ans))
+            st.write("LIKERT SCORE:", score)
+            total += score
+        except:
+            st.write("ERROR PARSING:", ans)
+
+    return total
+"""
+    total = 0
+    for r in responses:
         qid = str(r["QuestionID"])
         ans = r["Response"]
         row_df = df[df["QuestionID"].astype(str) == qid]
@@ -125,7 +154,7 @@ def calc_likert(df, responses):
             total += likert_to_score(int(ans))
         except:
             total += 0
-    return total
+    return total """
 
 
 def auto_evaluate_test(section, doc_id, df, responses):
