@@ -11,7 +11,6 @@ from firebase_admin import credentials, firestore
 def init_firebase():
     if firebase_admin._apps:
         return firestore.client()
-
     try:
         if "firebase" in st.secrets:
             cfg = dict(st.secrets["firebase"])
@@ -25,22 +24,17 @@ def init_firebase():
     except Exception as e:
         st.error(f"Firebase initialization failed: {e}")
         return None
-
     return firestore.client()
-
 
 db = init_firebase()
 if db is None:
     st.stop()
 
-# ---------------------------------------------------------------
-# PAGE CONFIG
-# ---------------------------------------------------------------
 st.set_page_config(page_title="Faculty Evaluation", layout="wide")
 st.title("🧑‍🏫 Faculty Evaluation – Text Questions")
 
 # ---------------------------------------------------------------
-# LOAD QUESTION BANKS
+# LOAD CSV FILES
 # ---------------------------------------------------------------
 @st.cache_data
 def load_questions():
@@ -53,7 +47,6 @@ def load_questions():
 
 question_banks = load_questions()
 
-# Which tests are auto vs manual
 AUTO_EVAL_TESTS = [
     "Adaptability & Learning",
     "Communication Skills - Objective",
@@ -64,45 +57,36 @@ MANUAL_EVAL_TESTS = [
     "Communication Skills - Descriptive",
 ]
 
-ALL_TESTS = [
-    "Aptitude Test",
-    "Adaptability & Learning",
-    "Communication Skills - Objective",
-    "Communication Skills - Descriptive",
-]
+ALL_TESTS = AUTO_EVAL_TESTS + MANUAL_EVAL_TESTS
 
 # ---------------------------------------------------------------
-# HELPER FUNCTIONS
+# SCORING HELPERS
 # ---------------------------------------------------------------
 def get_correct_answer(row):
-    for col in ["Answer", "CorrectAnswer", "Correct", "Ans", "AnswerKey", "RightAnswer"]:
+    for col in ["Answer", "CorrectAnswer", "Correct", "Ans", "AnswerKey"]:
         if col in row and not pd.isna(row[col]):
             return str(row[col]).strip()
     return None
 
-
 def likert_to_score(v):
-    # Scoring: 1->0, 2->1, 3->2, 4->3, 5->4
     v = int(v)
-    return max(0, min(v - 1, 4))
-
+    return v - 1   # 1→0, 2→1, 3→2, 4→3, 5→4
 
 def calc_mcq(df, responses):
     score = 0
     for r in responses:
-        qid = str(r["QuestionID"])
+        qid = str(r["QuestionID"]).strip()
         student_ans = str(r["Response"]).strip()
-        row_df = df[df["QuestionID"].astype(str) == qid]
+        row_df = df[df["QuestionID"].astype(str).str.strip() == qid]
         if row_df.empty:
             continue
         row = row_df.iloc[0]
-        if str(row["Type"]).lower() != "mcq":
+        if row["Type"] != "mcq":
             continue
         correct = get_correct_answer(row)
         if correct and student_ans == correct:
             score += 1
     return score
-
 
 def calc_likert(df, responses):
     total = 0
@@ -113,14 +97,10 @@ def calc_likert(df, responses):
         if row_df.empty:
             continue
         row = row_df.iloc[0]
-        if str(row["Type"]).lower() != "likert":
+        if row["Type"].lower() != "likert":
             continue
-        try:
-            total += likert_to_score(int(ans))
-        except:
-            total += 0
+        total += likert_to_score(int(ans))
     return total
-
 
 def auto_evaluate_test(section, doc_id, df, responses):
     mcq_total = calc_mcq(df, responses)
@@ -137,9 +117,10 @@ def auto_evaluate_test(section, doc_id, df, responses):
         }
     }, merge=True)
 
+    return final_total
 
 # ---------------------------------------------------------------
-# READ STUDENT RESPONSE DOCS
+# READ STUDENT RESPONSES
 # ---------------------------------------------------------------
 docs = db.collection("student_responses").stream()
 student_map = {}
@@ -153,13 +134,37 @@ for doc in docs:
     student_map[roll].append((section, doc.id))
 
 # ---------------------------------------------------------------
-# UI – SELECT STUDENT
+# BUILD STUDENT STATUS FOR DROPDOWN
 # ---------------------------------------------------------------
-all_students = sorted(student_map.keys())
-selected_roll = st.selectbox("Select Student Roll Number", all_students)
+def student_status(roll):
+    sections = dict(student_map[roll])
+    completed = 0
+
+    for test in ALL_TESTS:
+        if test in sections:
+            doc = db.collection("student_responses").document(sections[test]).get().to_dict()
+            eval_data = doc.get("Evaluation", {})
+            if "final_total" in eval_data:
+                completed += 1
+
+    if completed == len(ALL_TESTS):
+        return "✅ Completed"
+    elif completed == 0:
+        return "❌ Not Started"
+    else:
+        return "⏳ Partial"
+
+# dropdown values
+student_choices = [
+    f"{roll} — {student_status(roll)}"
+    for roll in sorted(student_map.keys())
+]
+
+selected_display = st.selectbox("Select Student", student_choices)
+selected_roll = selected_display.split("—")[0].strip()
 
 # ---------------------------------------------------------------
-# AUTO-EVALUATE MCQ + LIKERT TESTS
+# AUTO-EVALUATE NECESSARY TESTS
 # ---------------------------------------------------------------
 for section, doc_id in student_map[selected_roll]:
     if section in AUTO_EVAL_TESTS:
@@ -169,37 +174,35 @@ for section, doc_id in student_map[selected_roll]:
         auto_evaluate_test(section, doc_id, df, responses)
 
 # ---------------------------------------------------------------
-# GLOBAL MCQ + LIKERT TOTALS (AUTO)
-# ---------------------------------------------------------------
-global_mcq = 0
-global_likert = 0
-
-for section, doc_id in student_map[selected_roll]:
-    doc_data = db.collection("student_responses").document(doc_id).get().to_dict()
-    if "Evaluation" in doc_data:
-        global_mcq += doc_data["Evaluation"].get("mcq_total", 0)
-        global_likert += doc_data["Evaluation"].get("likert_total", 0)
-
-# ---------------------------------------------------------------
 # MANUAL TEST SELECTION
 # ---------------------------------------------------------------
-tests_taken = [t[0] for t in student_map[selected_roll] if t[0] in MANUAL_EVAL_TESTS]
+tests_taken = [
+    sec for sec, doc_id in student_map[selected_roll]
+    if sec in MANUAL_EVAL_TESTS
+]
 
-selected_test = st.selectbox("Select Test for Manual Evaluation", tests_taken)
+selected_test = st.selectbox("Select Manual Evaluation Test", tests_taken)
 
-doc_id = None
-for sec, d_id in student_map[selected_roll]:
-    if sec == selected_test:
-        doc_id = d_id
-        break
-
+# Get that doc
+doc_id = dict(student_map[selected_roll])[selected_test]
 doc_data = db.collection("student_responses").document(doc_id).get().to_dict()
-df = question_banks[selected_test]
 responses = doc_data["Responses"]
+df = question_banks[selected_test]
 short_df = df[df["Type"] == "short"]
 
 # ---------------------------------------------------------------
-# FACULTY TEXT EVALUATION (WITH CORRECT MARK SCALES)
+# SESSION STATE FOR UNSAVED MARKS
+# ---------------------------------------------------------------
+if "pending_marks" not in st.session_state:
+    st.session_state["pending_marks"] = {}
+
+if selected_test not in st.session_state["pending_marks"]:
+    st.session_state["pending_marks"][selected_test] = {}
+
+pending = st.session_state["pending_marks"][selected_test]
+
+# ---------------------------------------------------------------
+# MANUAL TEXT EVALUATION UI
 # ---------------------------------------------------------------
 marks_given = {}
 text_total = 0
@@ -212,27 +215,45 @@ for _, row in short_df.iterrows():
         "(no answer)"
     )
 
-    # ✅ IMPORTANT: decide marking scale
-    # If question asks for 3 points (contains "3" or "three"), give 0–3.
-    # Otherwise simple factual question → 0–1.
+    # scale logic
     qlower = qtext.lower()
-    is_three_point = (" 3 " in qlower) or ("three" in qlower) or ("any 3" in qlower) or ("three points" in qlower)
+    is_three_point = (" 3 " in qlower) or ("three" in qlower)
     scale = [0, 1, 2, 3] if is_three_point else [0, 1]
+
+    # prefill pending value
+    default = pending.get(qid, 0)
 
     with st.expander(f"Q{qid}: {qtext}", expanded=True):
         colA, colB = st.columns([3, 1])
         with colA:
             st.markdown(f"**Student Answer:** {student_ans}")
         with colB:
-            mark = st.radio("Marks:", scale, horizontal=True, key=f"mark_{qid}")
+            mark = st.radio(
+                "Marks:",
+                scale,
+                horizontal=True,
+                index=scale.index(default),
+                key=f"{selected_test}_{qid}"
+            )
 
-        marks_given[qid] = mark
-        text_total += mark
-
-st.markdown("---")
+    pending[qid] = mark
+    marks_given[qid] = mark
+    text_total += mark
 
 # ---------------------------------------------------------------
-# FINAL DISPLAY (AUTO + TEXT + GRAND TOTAL)
+# AUTO SCORES FOR DISPLAY
+# ---------------------------------------------------------------
+global_mcq = 0
+global_likert = 0
+
+for sec, did in student_map[selected_roll]:
+    doc = db.collection("student_responses").document(did).get().to_dict()
+    eval_data = doc.get("Evaluation", {})
+    global_mcq += eval_data.get("mcq_total", 0)
+    global_likert += eval_data.get("likert_total", 0)
+
+# ---------------------------------------------------------------
+# DISPLAY SCORES
 # ---------------------------------------------------------------
 st.subheader(f"MCQ Score (Auto): {global_mcq}")
 st.subheader(f"Likert Score (Auto): {global_likert}")
@@ -242,15 +263,24 @@ grand_total = global_mcq + global_likert + text_total
 st.subheader(f"GRAND TOTAL (All Tests) = {grand_total}")
 
 # ---------------------------------------------------------------
-# SAVE EVALUATION
+# SAVE BUTTON
 # ---------------------------------------------------------------
 if st.button("💾 Save Evaluation"):
     db.collection("student_responses").document(doc_id).set({
         "Evaluation": {
             "text_marks": marks_given,
             "text_total": text_total,
-            "grand_total": grand_total
+            "final_total": global_mcq + global_likert + text_total
         }
     }, merge=True)
 
-    st.success("Evaluation + Grand Total Saved Successfully ✓")
+    # propagate to all tests
+    for sec, did in student_map[selected_roll]:
+        db.collection("student_responses").document(did).set({
+            "Evaluation": {"grand_total": grand_total}
+        }, merge=True)
+
+    # clear pending marks
+    st.session_state["pending_marks"][selected_test] = {}
+
+    st.success("Evaluation Saved Successfully ✓")
