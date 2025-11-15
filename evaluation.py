@@ -129,6 +129,10 @@ def calc_likert(df, responses):
 
 
 def auto_evaluate_test(section, doc_id, df, responses):
+    st.write("DEBUG → Section:", section)
+    st.write("DEBUG → CSV rows:", len(df))
+    st.write("DEBUG → Sample row:", df.head(1))
+    
     mcq_total = calc_mcq(df, responses)
     likert_total = calc_likert(df, responses)
     final_total = mcq_total + likert_total
