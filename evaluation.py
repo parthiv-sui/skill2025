@@ -11,7 +11,6 @@ from firebase_admin import credentials, firestore
 def init_firebase():
     if firebase_admin._apps:
         return firestore.client()
-
     try:
         if "firebase" in st.secrets:
             cfg = dict(st.secrets["firebase"])
@@ -22,13 +21,10 @@ def init_firebase():
                 cfg = json.load(f)
             cred = credentials.Certificate(cfg)
             firebase_admin.initialize_app(cred)
-
     except Exception as e:
         st.error(f"Firebase initialization failed: {e}")
         return None
-
     return firestore.client()
-
 
 db = init_firebase()
 if db is None:
@@ -43,7 +39,7 @@ st.title("🧑‍🏫 Faculty Evaluation – Text Questions")
 
 
 # ---------------------------------------------------------------
-# LOAD QUESTION BANKS
+# LOAD CSV QUESTION BANKS
 # ---------------------------------------------------------------
 @st.cache_data
 def load_questions():
@@ -58,49 +54,55 @@ question_banks = load_questions()
 
 
 # ---------------------------------------------------------------
-# TEST GROUPS
+# TEST CATEGORIES
 # ---------------------------------------------------------------
-AUTO_EVAL_TESTS = ["Adaptability & Learning", "Communication Skills - Objective"]
-MANUAL_EVAL_TESTS = ["Aptitude Test", "Communication Skills - Descriptive"]
-ALL_TESTS = AUTO_EVAL_TESTS + MANUAL_EVAL_TESTS
+AUTO_EVAL_TESTS = [
+    "Adaptability & Learning",
+    "Communication Skills - Objective",
+]
+
+MANUAL_EVAL_TESTS = [
+    "Aptitude Test",
+    "Communication Skills - Descriptive",
+]
+
+ALL_TESTS = [
+    "Aptitude Test",
+    "Adaptability & Learning",
+    "Communication Skills - Objective",
+    "Communication Skills - Descriptive",
+]
 
 
 # ---------------------------------------------------------------
-# HELPERS
+# HELPER FUNCTIONS
 # ---------------------------------------------------------------
 def get_correct_answer(row):
-    for col in ["Answer", "CorrectAnswer", "Correct", "Ans", "AnswerKey"]:
+    for col in ["Answer", "CorrectAnswer", "Correct", "Ans", "AnswerKey", "RightAnswer"]:
         if col in row and not pd.isna(row[col]):
             return str(row[col]).strip()
     return None
 
 
-# ★ NEW: Likert scoring — LINEAR MODEL (0–4)
 def likert_to_score(v):
     v = int(v)
-    if v < 1 or v > 5:
-        return 0
-    return v - 1      # 1→0, 2→1, 3→2, 4→3, 5→4
+    return v - 1   # 1→0, 2→1, 3→2, 4→3, 5→4
 
 
 def calc_mcq(df, responses):
     score = 0
     for r in responses:
-        qid = str(r["QuestionID"]).strip()
+        qid = str(r["QuestionID"])
         student_ans = str(r["Response"]).strip()
-
-        row_df = df[df["QuestionID"].astype(str).str.strip() == qid]
+        row_df = df[df["QuestionID"].astype(str) == qid]
         if row_df.empty:
             continue
-
         row = row_df.iloc[0]
         if str(row["Type"]).lower() != "mcq":
             continue
-
         correct = get_correct_answer(row)
         if correct and student_ans == correct:
             score += 1
-
     return score
 
 
@@ -108,26 +110,21 @@ def calc_likert(df, responses):
     total = 0
     for r in responses:
         qid = str(r["QuestionID"]).strip()
-        ans = r["Response"]
-
+        try:
+            ans = int(r["Response"])
+        except:
+            continue
         row_df = df[df["QuestionID"].astype(str).str.strip() == qid]
         if row_df.empty:
             continue
-
         row = row_df.iloc[0]
         if str(row["Type"]).lower() != "likert":
             continue
-
-        try:
-            total += likert_to_score(int(ans))
-        except:
-            total += 0
-
+        total += likert_to_score(ans)
     return total
 
 
 def auto_evaluate_test(section, doc_id, df, responses):
-
     mcq_total = calc_mcq(df, responses)
     likert_total = calc_likert(df, responses)
     final_total = mcq_total + likert_total
@@ -145,30 +142,46 @@ def auto_evaluate_test(section, doc_id, df, responses):
     return final_total
 
 
-# Computes sum of all test scores
+def compute_auto_totals(roll):
+    auto_mcq = 0
+    auto_likert = 0
+
+    for section_name in AUTO_EVAL_TESTS:
+        for sec, doc_id in student_map[roll]:
+            if sec == section_name:
+                doc = db.collection("student_responses").document(doc_id).get().to_dict()
+                if doc and "Evaluation" in doc:
+                    auto_mcq += doc["Evaluation"].get("mcq_total", 0)
+                    auto_likert += doc["Evaluation"].get("likert_total", 0)
+
+    return auto_mcq, auto_likert
+
+
 def compute_grand_total(roll):
     total = 0
-    for section, doc_id in student_map[roll]:
-        st.write("DEBUG SECTION:", section)
-        doc = db.collection("student_responses").document(doc_id).get().to_dict()
-        if doc and "Evaluation" in doc and "final_total" in doc["Evaluation"]:
-            total += doc["Evaluation"]["final_total"]
+    for section_name in ALL_TESTS:
+        for sec, doc_id in student_map[roll]:
+            if sec == section_name:
+                doc = db.collection("student_responses").document(doc_id).get().to_dict()
+                if doc and "Evaluation" in doc:
+                    total += doc["Evaluation"].get("final_total", 0)
     return total
 
 
 def save_grand_total_to_all_tests(roll, grand_total):
     for section, doc_id in student_map[roll]:
         db.collection("student_responses").document(doc_id).set({
-            "Evaluation": {"grand_total": grand_total}
+            "Evaluation": {
+                "grand_total": grand_total
+            }
         }, merge=True)
 
 
 # ---------------------------------------------------------------
-# BUILD STUDENT MAP
+# LOAD STUDENT DOCUMENTS
 # ---------------------------------------------------------------
 docs = db.collection("student_responses").stream()
 student_map = {}
-
 for doc in docs:
     data = doc.to_dict()
     roll = data.get("Roll")
@@ -179,26 +192,37 @@ for doc in docs:
 
 
 # ---------------------------------------------------------------
-# SELECT STUDENT
+# UI — SELECT STUDENT
 # ---------------------------------------------------------------
 all_students = sorted(student_map.keys())
 selected_roll = st.selectbox("Select Student Roll Number", all_students)
 
 
 # ---------------------------------------------------------------
-# ALWAYS AUTO-EVALUATE MCQ + LIKERT TESTS
+# AUTO-EVALUATE TESTS FIRST
 # ---------------------------------------------------------------
 for section, doc_id in student_map[selected_roll]:
-
     if section in AUTO_EVAL_TESTS:
         doc_data = db.collection("student_responses").document(doc_id).get().to_dict()
         df = question_banks[section]
-        responses = doc_data.get("Responses", [])
+        responses = doc_data["Responses"]
         auto_evaluate_test(section, doc_id, df, responses)
 
 
 # ---------------------------------------------------------------
-# MANUAL EVALUATION (TEXT-BASED)
+# SHOW AUTO SCORES (TOP SECTION)
+# ---------------------------------------------------------------
+auto_mcq_total, auto_likert_total = compute_auto_totals(selected_roll)
+
+st.markdown("### ======================")
+st.markdown("### 🧮 AUTO-EVALUATED TESTS")
+st.markdown("### ======================")
+st.write(f"**MCQ Total (Auto):** {auto_mcq_total}")
+st.write(f"**Likert Total (Auto):** {auto_likert_total}")
+
+
+# ---------------------------------------------------------------
+# MANUAL TEST SELECTION
 # ---------------------------------------------------------------
 tests_taken = [
     t[0] for t in student_map[selected_roll]
@@ -208,12 +232,13 @@ tests_taken = [
 if len(tests_taken) == 0:
     st.success("All tests auto-evaluated ✓")
     grand_total = compute_grand_total(selected_roll)
-    st.subheader(f"GRAND TOTAL = {grand_total}")
+    st.subheader(f"GRAND TOTAL (All Tests) = {grand_total}")
     st.stop()
 
 selected_test = st.selectbox("Select Test for Manual Evaluation", tests_taken)
 
 
+# LOAD TEST RESPONSES
 doc_id = None
 for sec, d_id in student_map[selected_roll]:
     if sec == selected_test:
@@ -222,54 +247,53 @@ for sec, d_id in student_map[selected_roll]:
 
 doc_data = db.collection("student_responses").document(doc_id).get().to_dict()
 df = question_banks[selected_test]
-responses = doc_data.get("Responses", [])
-
-
-short_df = df[df["Type"].astype(str).str.lower() == "short"]
+responses = doc_data["Responses"]
 
 
 # ---------------------------------------------------------------
-# FACULTY TEXT MARKING
+# MANUAL TEXT EVALUATION (ONLY TEXT MARKS)
 # ---------------------------------------------------------------
+st.markdown("### ======================")
+st.markdown(f"### 📝 MANUAL TEST – {selected_test}")
+st.markdown("### ======================")
+
 marks_given = {}
 text_total = 0
+
+short_df = df[df["Type"] == "short"]
 
 for _, row in short_df.iterrows():
     qid = str(row["QuestionID"])
     qtext = row["Question"]
-
     student_ans = next(
-        (r.get("Response", "(no answer)") for r in responses if str(r["QuestionID"]) == qid),
+        (r["Response"] for r in responses if str(r["QuestionID"]) == qid),
         "(no answer)"
     )
 
-    with st.expander(f"Q{qid}: {qtext}", expanded=True):
+    scale = [0, 1, 2, 3] if "3" in qtext.lower() else [0, 1]
+
+    with st.expander(f"{qid}: {qtext}", expanded=True):
         colA, colB = st.columns([3, 1])
         with colA:
-            st.write(f"**Student Answer:** {student_ans}")
+            st.markdown(f"**Student Answer:** {student_ans}")
         with colB:
-            mark = st.radio("Marks:", [0, 1, 2, 3], key=f"mark_{qid}", horizontal=True)
-
-    marks_given[qid] = mark
-    text_total += mark
-
-
-st.markdown("---")
-st.subheader(f"Text Marks (This Test) = {text_total}")
-
-mcq_total = calc_mcq(df, responses)
-likert_total = calc_likert(df, responses)
-
-final_total = text_total + mcq_total + likert_total
-
-st.write(f"MCQ Score = {mcq_total}")
-st.write(f"Likert Score = {likert_total}")
-st.subheader(f"FINAL TOTAL (This Test) = {final_total}")
+            mark = st.radio("Marks:", scale, horizontal=True, key=f"mark_{qid}")
+        marks_given[qid] = mark
+        text_total += mark
 
 
-# Recompute complete sum
-grand_total = compute_grand_total(selected_roll) - \
-              doc_data.get("Evaluation", {}).get("final_total", 0) + final_total
+# SHOW ONLY TEXT MARKS
+st.write(f"**Text Marks (This Test):** {text_total}")
+
+# FOR MANUAL TESTS -> MCQ & LIKERT ARE ALWAYS ZERO
+final_total = text_total   # Only text contributes
+
+
+# ---------------------------------------------------------------
+# GRAND TOTAL (AFTER THIS MANUAL TEST)
+# ---------------------------------------------------------------
+previous_total = compute_grand_total(selected_roll)
+grand_total = previous_total - doc_data.get("Evaluation", {}).get("final_total", 0) + final_total
 
 st.subheader(f"GRAND TOTAL (All Tests) = {grand_total}")
 
@@ -282,13 +306,12 @@ if st.button("💾 Save Evaluation"):
         "Evaluation": {
             "text_marks": marks_given,
             "text_total": text_total,
-            "mcq_total": mcq_total,
-            "likert_total": likert_total,
+            "mcq_total": 0,
+            "likert_total": 0,
             "final_total": final_total,
             "grand_total": grand_total
         }
     }, merge=True)
 
     save_grand_total_to_all_tests(selected_roll, grand_total)
-
-    st.success("Evaluation + Grand Total Saved Successfully ✓")
+    st.success("Evaluation Saved Successfully ✓")
