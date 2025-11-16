@@ -27,163 +27,155 @@ except Exception as e:
     st.stop()
 
 # ---------------------------------------------------------------
-# DEBUG: CHECK WHAT'S IN FIRESTORE
+# LOAD STUDENT RESPONSES - FIXED VERSION
 # ---------------------------------------------------------------
-st.subheader("🔍 Database Debug Info")
-
-try:
-    # Get all collections
-    collections = db.collections()
-    collection_names = [col.id for col in collections]
-    st.write(f"**Collections in database:** {collection_names}")
-    
-    # Check student_responses collection
-    docs = list(db.collection("student_responses").stream())
-    st.write(f"**Documents in 'student_responses':** {len(docs)}")
-    
-    if docs:
-        st.write("**Sample document:**")
-        sample_doc = docs[0].to_dict()
-        st.json(sample_doc)
-    else:
-        st.warning("❌ No student responses found in Firestore!")
-        st.info("""
-        **Students need to submit their responses first:**
-        
-        1. Make sure students are using the **student submission app**
-        2. Students should complete tests and click "Submit"
-        3. Their data will appear here automatically
-        """)
-        
-except Exception as e:
-    st.error(f"Error checking database: {e}")
-
-# ---------------------------------------------------------------
-# LOAD STUDENT RESPONSES (IF ANY EXIST)
-# ---------------------------------------------------------------
-def load_student_responses():
+def load_all_student_responses():
+    """Load ALL student responses without filtering"""
     try:
         docs = db.collection("student_responses").stream()
         student_data = []
         
         for doc in docs:
-            data = doc.to_dict()
-            student_data.append({
-                "doc_id": doc.id,
-                "name": data.get("Name", ""),
-                "roll": data.get("Roll", ""),
-                "section": data.get("Section", ""),
-                "responses": data.get("Responses", []),
-                "evaluation": data.get("Evaluation", {})
-            })
-        
+            try:
+                data = doc.to_dict()
+                st.write(f"📄 Found document: {doc.id}")  # Debug
+                
+                student_data.append({
+                    "doc_id": doc.id,
+                    "name": data.get("Name", "Unknown"),
+                    "roll": data.get("Roll", "Unknown"),
+                    "section": data.get("Section", "Unknown"),
+                    "responses": data.get("Responses", []),
+                    "evaluation": data.get("Evaluation", {})
+                })
+            except Exception as doc_error:
+                st.error(f"Error processing doc {doc.id}: {doc_error}")
+                continue
+                
         return student_data
+        
     except Exception as e:
-        st.error(f"Error loading student data: {e}")
+        st.error(f"❌ Error loading from Firestore: {e}")
         return []
 
-student_data = load_student_responses()
+# Load the data
+student_data = load_all_student_responses()
+st.write(f"**Total student records loaded:** {len(student_data)}")
 
-# Only show evaluation interface if we have data
-if student_data:
-    # Group by roll number
-    student_map = {}
-    for data in student_data:
-        roll = data["roll"]
-        if roll not in student_map:
-            student_map[roll] = []
-        student_map[roll].append(data)
-
-    # Load question banks
-    @st.cache_data
-    def load_questions():
-        question_banks = {}
-        csv_files = {
-            "Aptitude Test": "aptitude.csv",
-            "Adaptability & Learning": "adaptability_learning.csv", 
-            "Communication Skills - Objective": "communcation_skills_objective.csv",
-            "Communication Skills - Descriptive": "communcation_skills_descriptive.csv",
-        }
-        
-        for section, filename in csv_files.items():
-            try:
-                question_banks[section] = pd.read_csv(filename)
-            except Exception as e:
-                st.error(f"Error loading {filename}: {e}")
-        
-        return question_banks
-
-    question_banks = load_questions()
-
-    # Manual evaluation sections
-    MANUAL_EVAL_TESTS = ["Aptitude Test", "Communication Skills - Descriptive"]
-
-    # ---------------------------------------------------------------
-    # EVALUATION INTERFACE
-    # ---------------------------------------------------------------
-    st.subheader("📝 Student Evaluation")
+if not student_data:
+    st.error("""
+    ❌ No student data found, but Firebase is connected.
     
-    all_students = sorted(student_map.keys())
-    selected_roll = st.selectbox("Select Student Roll Number", all_students)
+    **Possible issues:**
+    1. Data is in a different collection name
+    2. Different field names in documents
+    3. Data structure is different than expected
     
-    if selected_roll:
-        student_sections_data = student_map[selected_roll]
-        student_name = student_sections_data[0].get("name", "Unknown")
+    **Let's debug:**""")
+    
+    # Debug: Show all collections and sample data
+    try:
+        collections = list(db.collections())
+        st.write("**Available collections:**", [col.id for col in collections])
         
-        st.write(f"**Student:** {student_name}")
-        st.write(f"**Roll:** {selected_roll}")
-        
-        # Get sections that need manual evaluation
-        manual_eval_sections = []
-        for data in student_sections_data:
-            section = data["section"]
-            if section in MANUAL_EVAL_TESTS:
-                manual_eval_sections.append(section)
-        
-        if manual_eval_sections:
-            selected_section = st.selectbox("Select Section to Evaluate", manual_eval_sections)
-            
-            # Find the selected section data
-            selected_section_data = None
-            for data in student_sections_data:
-                if data["section"] == selected_section:
-                    selected_section_data = data
-                    break
-            
-            if selected_section_data and selected_section in question_banks:
-                st.subheader(f"Evaluating: {selected_section}")
-                
-                df = question_banks[selected_section]
-                short_questions = df[df["Type"].str.lower() == "short"]
-                
-                if not short_questions.empty:
-                    # Evaluation interface here...
-                    st.info(f"Found {len(short_questions)} questions to evaluate")
-                    # Add your evaluation code here
-                else:
-                    st.info("No descriptive questions in this section")
-            else:
-                st.error("Could not load section data")
+        # Check what's actually in student_responses
+        docs = list(db.collection("student_responses").limit(5).stream())
+        if docs:
+            st.write("**Sample documents in student_responses:**")
+            for doc in docs:
+                st.json(doc.to_dict())
         else:
-            st.info("No sections require manual evaluation for this student")
-else:
-    st.info("👆 Waiting for student submissions...")
+            st.write("No documents in student_responses collection")
+            
+    except Exception as debug_error:
+        st.error(f"Debug error: {debug_error}")
+    
+    st.stop()
+
+# Show what we found
+st.success(f"✅ Loaded {len(student_data)} student records!")
+
+# Display all students and their data
+st.subheader("📋 All Student Submissions")
+for data in student_data:
+    with st.expander(f"🎓 {data['name']} ({data['roll']}) - {data['section']}"):
+        st.write(f"**Document ID:** {data['doc_id']}")
+        st.write(f"**Number of responses:** {len(data['responses'])}")
+        st.write(f"**Evaluation data:** {data['evaluation']}")
+        
+        # Show first few responses
+        if data['responses']:
+            st.write("**Sample responses:**")
+            for i, resp in enumerate(data['responses'][:3]):  # Show first 3
+                st.write(f"{i+1}. Q{resp.get('QuestionID', '?')}: {resp.get('Response', 'No response')[:50]}...")
 
 # ---------------------------------------------------------------
-# INSTRUCTIONS
+# GROUP BY ROLL NUMBER FOR EVALUATION
+# ---------------------------------------------------------------
+student_map = {}
+for data in student_data:
+    roll = data["roll"]
+    if roll not in student_map:
+        student_map[roll] = []
+    student_map[roll].append(data)
+
+st.subheader("👥 Students by Roll Number")
+st.write(f"**Unique students:** {len(student_map)}")
+
+# ---------------------------------------------------------------
+# EVALUATION INTERFACE
 # ---------------------------------------------------------------
 st.markdown("---")
-st.subheader("📋 Instructions")
+st.subheader("📝 Evaluation Interface")
 
-st.info("""
-**For Faculty:**
-1. Students must submit their responses using the student portal first
-2. Once students submit, their data will appear here automatically
-3. Select a student and section to begin evaluation
-4. Use the 0/1 or 0/1/2/3 scoring system as appropriate
+# Student selection
+all_students = sorted(student_map.keys())
+selected_roll = st.selectbox("Select Student Roll Number", all_students)
 
-**For Students:**
-- Make sure you're using the correct student submission app
-- Complete all questions and click "Submit"
-- Your data will be available for faculty evaluation immediately
-""")
+if selected_roll:
+    student_sections = student_map[selected_roll]
+    student_name = student_sections[0]["name"]
+    
+    st.write(f"**Evaluating:** {student_name} ({selected_roll})")
+    st.write(f"**Tests taken:** {len(student_sections)}")
+    
+    # Show all sections for this student
+    for section_data in student_sections:
+        st.write(f"- **{section_data['section']}**: {len(section_data['responses'])} questions")
+    
+    # Section selection for evaluation
+    section_names = [data["section"] for data in student_sections]
+    selected_section = st.selectbox("Select Section to Evaluate", section_names)
+    
+    # Find the selected section data
+    selected_section_data = None
+    for data in student_sections:
+        if data["section"] == selected_section:
+            selected_section_data = data
+            break
+    
+    if selected_section_data:
+        st.subheader(f"🔍 Evaluating: {selected_section}")
+        
+        # Show all responses for this section
+        responses = selected_section_data["responses"]
+        st.write(f"**Number of questions:** {len(responses)}")
+        
+        for i, resp in enumerate(responses):
+            with st.expander(f"Q{resp.get('QuestionID', i+1)}: {resp.get('Question', 'No question text')[:50]}...", expanded=False):
+                st.write(f"**Student's answer:** {resp.get('Response', 'No response')}")
+                
+                # Simple scoring interface
+                score = st.radio(
+                    "Score:",
+                    [0, 1, 2, 3],
+                    horizontal=True,
+                    key=f"score_{selected_roll}_{selected_section}_{i}"
+                )
+        
+        # Save evaluation button
+        if st.button("💾 Save Evaluation"):
+            st.success("Evaluation saved! (Placeholder - add your save logic here)")
+
+st.markdown("---")
+st.info("💡 **Tip**: If you're not seeing expected data, check the field names in your Firestore documents match what the code expects (Name, Roll, Section, Responses).")
