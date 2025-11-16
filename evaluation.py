@@ -40,26 +40,19 @@ if db is None:
 # SAFE LOADER FOR student_responses
 # ---------------------------------------------------------------
 def load_safe_student_responses(db):
-    """
-    Load docs from student_responses safely:
-    - skip docs without Roll or Section
-    - ensure Responses exists and is a list
-    - never crash the app
-    """
     safe_docs = []
     try:
-        docs = db.collection("student_responses").stream()
+        doc_refs = db.collection("student_responses").list_documents()
     except Exception as e:
-        st.error(f"Error reading Firestore: {e}")
+        st.error(f"Error loading Firestore documents: {e}")
         return safe_docs
 
-    for d in docs:
+    for ref in doc_refs:
         try:
-            data = d.to_dict() or {}
+            data = ref.get().to_dict() or {}
             roll = data.get("Roll")
             section = data.get("Section")
             if not roll or not section:
-                # malformed doc, ignore
                 continue
 
             responses = data.get("Responses")
@@ -67,12 +60,12 @@ def load_safe_student_responses(db):
                 responses = []
             data["Responses"] = responses
 
-            safe_docs.append((d.id, data))
+            safe_docs.append((ref.id, data))
         except Exception:
-            # skip any weird doc without killing the app
             continue
 
     return safe_docs
+
 
 
 safe_docs = load_safe_student_responses(db)
