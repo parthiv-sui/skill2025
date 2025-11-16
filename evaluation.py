@@ -9,6 +9,7 @@ from firebase_admin import credentials, firestore
 # ---------------------------------------------------------------
 @st.cache_resource
 def init_firebase():
+    """Initialise Firebase only once."""
     if firebase_admin._apps:
         return firestore.client()
     try:
@@ -52,6 +53,9 @@ def load_questions():
 
 question_banks = load_questions()
 
+# Only these two have short questions to be manually evaluated
+MANUAL_TESTS = ["Aptitude Test", "Communication Skills - Descriptive"]
+
 ALL_TESTS = [
     "Aptitude Test",
     "Adaptability & Learning",
@@ -63,6 +67,7 @@ ALL_TESTS = [
 # HELPER FUNCTIONS
 # ---------------------------------------------------------------
 def get_correct_answer(row):
+    """Return the correct MCQ answer from any reasonable column name."""
     for col in ["Answer", "CorrectAnswer", "Correct", "Ans", "AnswerKey"]:
         if col in row and not pd.isna(row[col]):
             return str(row[col]).strip()
@@ -70,12 +75,12 @@ def get_correct_answer(row):
 
 
 def likert_to_score(v):
+    """Map 1–5 Likert value to 0–4 score."""
     try:
         v = int(v)
     except Exception:
         return 0
-    # 1→0, 2→1, 3→2, 4→3, 5→4
-    return max(0, v - 1)
+    return max(0, v - 1)  # 1→0, 2→1, 3→2, 4→3, 5→4
 
 
 def calc_mcq(df, responses):
@@ -115,11 +120,9 @@ def calc_likert(df, responses):
 # ---------------------------------------------------------------
 docs = db.collection("student_responses").stream()
 student_map = {}          # roll -> list of (section, doc_id)
-doc_cache = {}            # doc_id -> dict
 
 for d in docs:
     data = d.to_dict()
-    doc_cache[d.id] = data
     roll = data.get("Roll")
     section = data.get("Section")
     if not roll or not section:
@@ -127,38 +130,49 @@ for d in docs:
     student_map.setdefault(roll, []).append((section, d.id))
 
 if not student_map:
-    st.error("No student_responses documents found.")
+    st.error("No student_responses documents found in Firestore.")
     st.stop()
 
+# ---------------------------------------------------------------
+# SELECT STUDENT
+# ---------------------------------------------------------------
 all_rolls = sorted(student_map.keys())
 selected_roll = st.selectbox("Select Student Roll Number", all_rolls)
 
 # ---------------------------------------------------------------
-# PRECOMPUTE AUTO TOTALS + SAVED TEXT TOTALS FOR THIS STUDENT
+# GATHER PER-SECTION DATA FOR THIS STUDENT
 # ---------------------------------------------------------------
+sections_info = {}        # section -> info dict
 total_mcq_all = 0
 total_likert_all = 0
-per_section = {}          # section -> dict{doc_id, df, responses, saved_text_total, saved_marks}
 
 for section, doc_id in student_map[selected_roll]:
-    if section not in ALL_TESTS:
+    # Skip any section for which we don't have a CSV
+    if section not in question_banks:
         continue
 
-    data = doc_cache.get(doc_id) or db.collection("student_responses").document(doc_id).get().to_dict()
-    doc_cache[doc_id] = data
-    responses = data.get("Responses", [])
-    df = question_banks[section]
+    doc_ref = db.collection("student_responses").document(doc_id)
+    doc_data = doc_ref.get().to_dict() or {}
+    responses = doc_data.get("Responses", [])
+
+    df = question_banks[section].copy()
+
+    # Ensure necessary columns exist
+    if "Type" not in df.columns:
+        df["Type"] = ""
+    if "QuestionID" not in df.columns:
+        df["QuestionID"] = [str(i + 1) for i in range(len(df))]
 
     mcq = calc_mcq(df, responses)
     likert = calc_likert(df, responses)
     total_mcq_all += mcq
     total_likert_all += likert
 
-    eval_data = data.get("Evaluation", {})
+    eval_data = doc_data.get("Evaluation", {}) or {}
     saved_text_total = int(eval_data.get("text_total", 0) or 0)
     saved_marks = eval_data.get("text_marks", {}) or {}
 
-    per_section[section] = {
+    sections_info[section] = {
         "doc_id": doc_id,
         "df": df,
         "responses": responses,
@@ -168,29 +182,44 @@ for section, doc_id in student_map[selected_roll]:
         "saved_marks": saved_marks,
     }
 
-# ---------------------------------------------------------------
-# SELECT TEST FOR MANUAL EVALUATION
-# ---------------------------------------------------------------
-tests_taken = [sec for sec, _ in student_map[selected_roll] if sec in ALL_TESTS]
+# Show overall auto-evaluated totals
+st.markdown("### Auto-evaluated totals (all tests)")
+st.write(f"**MCQ Score (Auto):** {total_mcq_all}")
+st.write(f"**Likert Score (Auto):** {total_likert_all}")
 
-if not tests_taken:
-    st.success("No tests found for this student.")
+# ---------------------------------------------------------------
+# WHICH MANUAL TESTS DOES THIS STUDENT ACTUALLY HAVE?
+# ---------------------------------------------------------------
+manual_tests_taken = [
+    section for section, _ in student_map[selected_roll]
+    if section in MANUAL_TESTS and section in sections_info
+]
+
+if not manual_tests_taken:
+    # No short-answer tests for this student – just compute grand total from saved text totals
+    total_text_all = sum(info["saved_text_total"] for info in sections_info.values())
+    grand_total = total_mcq_all + total_likert_all + total_text_all
+    st.success("No short-answer questions for this student. All evaluation is auto.")
+    st.subheader(f"GRAND TOTAL (All Tests) = {grand_total}")
     st.stop()
 
-selected_test = st.selectbox("Select Test for Manual Evaluation", tests_taken)
+# ---------------------------------------------------------------
+# SELECT TEST FOR MANUAL TEXT EVALUATION
+# ---------------------------------------------------------------
+selected_test = st.selectbox("Select Test for Manual Evaluation", manual_tests_taken)
 
-info = per_section[selected_test]
+info = sections_info[selected_test]
 df = info["df"]
 responses = info["responses"]
 saved_marks = info["saved_marks"]
 
 short_df = df[df["Type"].astype(str).str.lower() == "short"]
 
-# ---------------------------------------------------------------
-# MANUAL TEXT EVALUATION UI
-# ---------------------------------------------------------------
-st.markdown(f"### Manual Evaluation – {selected_test}")
+st.markdown(f"### Manual text evaluation – {selected_test}")
 
+# ---------------------------------------------------------------
+# BUILD UI FOR SHORT QUESTIONS
+# ---------------------------------------------------------------
 for _, row in short_df.iterrows():
     qid = str(row["QuestionID"])
     qtext = str(row["Question"])
@@ -200,7 +229,7 @@ for _, row in short_df.iterrows():
         "(no answer)"
     )
 
-    # Decide between 0–1 and 0–3 based on wording (very simple rule; adjust if needed)
+    # Decide between 0–1 and 0–3 scale based on wording (simple heuristic)
     qlower = qtext.lower()
     is_three_point = (" 3 " in qlower) or ("three" in qlower) or ("any 3" in qlower)
     scale = [0, 1, 2, 3] if is_three_point else [0, 1]
@@ -213,79 +242,74 @@ for _, row in short_df.iterrows():
     key = f"{selected_roll}__{selected_test}__{qid}"
 
     with st.expander(f"{qid}: {qtext}", expanded=True):
-        colA, colB = st.columns([3, 1])
-        with colA:
+        col1, col2 = st.columns([3, 1])
+        with col1:
             st.markdown(f"**Student Answer:** {student_ans}")
-        with colB:
+        with col2:
             st.radio(
                 "Marks:",
                 scale,
                 index=default_index,
                 horizontal=True,
-                key=key
+                key=key,
             )
 
-# ---------------------------------------------------------------
-# SHOW AUTO TOTALS (always)
-# ---------------------------------------------------------------
 st.markdown("---")
-st.subheader(f"MCQ Score (Auto): {total_mcq_all}")
-st.subheader(f"Likert Score (Auto): {total_likert_all}")
 
 # ---------------------------------------------------------------
-# SAVE BUTTON – compute & save, THEN show text + grand totals
+# SAVE + SHOW TOTALS
 # ---------------------------------------------------------------
 if "last_totals" not in st.session_state:
     st.session_state["last_totals"] = None
 
 if st.button("💾 Save Evaluation for this Test"):
-    # 1) Collect current marks for this test from session_state
-    text_marks_to_save = {}
-    text_total_this_test = 0
+    # 1) Collect marks for this test
+    text_marks = {}
+    text_total = 0
     for _, row in short_df.iterrows():
         qid = str(row["QuestionID"])
         key = f"{selected_roll}__{selected_test}__{qid}"
         mark = int(st.session_state.get(key, 0))
-        text_marks_to_save[qid] = mark
-        text_total_this_test += mark
+        text_marks[qid] = mark
+        text_total += mark
 
-    # 2) Save ONLY for this test
+    # 2) Save to Firestore
     doc_id = info["doc_id"]
-    with st.spinner("Saving evaluation..."):
-        db.collection("student_responses").document(doc_id).set({
-            "Evaluation": {
-                "text_marks": text_marks_to_save,
-                "text_total": text_total_this_test,
-            }
-        }, merge=True)
+    db.collection("student_responses").document(doc_id).set({
+        "Evaluation": {
+            "text_marks": text_marks,
+            "text_total": text_total,
+        }
+    }, merge=True)
 
-    # 3) Compute grand total using:
-    #    - auto MCQ + Likert for all tests
-    #    - text_total for OTHER tests from saved_text_total
-    #    - text_total for THIS test from current marks
-    other_text_total = 0
-    for sec, sec_info in per_section.items():
-        if sec == selected_test:
-            continue
-        other_text_total += int(sec_info["saved_text_total"] or 0)
+    # 3) Update in-memory text total for this test
+    sections_info[selected_test]["saved_text_total"] = text_total
 
-    grand_total = total_mcq_all + total_likert_all + other_text_total + text_total_this_test
+    # 4) Compute grand total using:
+    #    - all MCQ + Likert
+    #    - text_total for this test (current)
+    #    - text_total for other tests (saved values)
+    other_text_total = sum(
+        sec_info["saved_text_total"]
+        for sec_name, sec_info in sections_info.items()
+        if sec_name != selected_test
+    )
+    grand_total = total_mcq_all + total_likert_all + other_text_total + text_total
 
     st.session_state["last_totals"] = {
         "roll": selected_roll,
         "section": selected_test,
-        "text_total": text_total_this_test,
+        "text_total": text_total,
         "grand_total": grand_total,
     }
-
-    st.success("Evaluation saved ✔")
+    st.success("Evaluation saved for this test ✅")
 
 # ---------------------------------------------------------------
-# SHOW TEXT MARKS + GRAND TOTAL ONLY AFTER SAVE
+# DISPLAY TEXT MARKS + GRAND TOTAL AFTER SAVE
 # ---------------------------------------------------------------
 lt = st.session_state.get("last_totals")
 if lt and lt["roll"] == selected_roll and lt["section"] == selected_test:
     st.subheader(f"Text Marks (This Test): {lt['text_total']}")
     st.subheader(f"GRAND TOTAL (All Tests) = {lt['grand_total']}")
 else:
-    st.info("Click **Save Evaluation for this Test** to see Text Marks and Grand Total.")
+    st.info("After awarding marks, click **Save Evaluation for this Test** to see text marks and the grand total.")
