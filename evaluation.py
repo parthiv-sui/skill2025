@@ -5,381 +5,250 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 # ---------------------------------------------------------------
-# PAGE + FIREBASE INIT
+# SIMPLE FIREBASE INIT
 # ---------------------------------------------------------------
 st.set_page_config(page_title="Faculty Evaluation", layout="wide")
 st.title("🧑‍🏫 Faculty Evaluation Dashboard")
 
-
-@st.cache_resource
-def init_firebase():
-    """Initialize Firebase only once."""
-    if firebase_admin._apps:
-        return firestore.client()
-
-    try:
-        if "firebase" in st.secrets:
-            cfg = dict(st.secrets["firebase"])
-        else:
-            with open("firebase_key.json", "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-
-        cred = credentials.Certificate(cfg)
+# Initialize Firebase
+try:
+    if not firebase_admin._apps:
+        # Use the correct secret name - 'firebase' not 'firebase_key'
+        firebase_config = st.secrets["firebase"]
+        
+        # Parse if it's a string
+        if isinstance(firebase_config, str):
+            firebase_config = json.loads(firebase_config)
+        
+        cred = credentials.Certificate(firebase_config)
         firebase_admin.initialize_app(cred)
-        return firestore.client()
-    except Exception as e:
-        st.error(f"Firebase initialization failed: {e}")
-        return None
-
-
-db = init_firebase()
-if db is None:
+    
+    db = firestore.client()
+    st.success("✅ Connected to Firebase!")
+    
+except Exception as e:
+    st.error(f"❌ Firebase initialization failed: {e}")
     st.stop()
 
 # ---------------------------------------------------------------
-# SAFE LOADER FOR student_responses
+# LOAD STUDENT RESPONSES
 # ---------------------------------------------------------------
-def load_safe_student_responses(db):
-    safe_docs = []
+def load_student_responses():
+    """Load all student responses from Firestore"""
     try:
-        doc_refs = db.collection("student_responses").list_documents()
+        docs = db.collection("student_responses").stream()
+        student_data = []
+        
+        for doc in docs:
+            data = doc.to_dict()
+            student_data.append({
+                "doc_id": doc.id,
+                "name": data.get("Name", ""),
+                "roll": data.get("Roll", ""),
+                "section": data.get("Section", ""),
+                "responses": data.get("Responses", []),
+                "evaluation": data.get("Evaluation", {})
+            })
+        
+        return student_data
+        
     except Exception as e:
-        st.error(f"Error loading Firestore documents: {e}")
-        return safe_docs
+        st.error(f"Error loading student data: {e}")
+        return []
 
-    for ref in doc_refs:
-        try:
-            data = ref.get().to_dict() or {}
-            roll = data.get("Roll")
-            section = data.get("Section")
-            if not roll or not section:
-                continue
+# Load student data
+student_data = load_student_responses()
 
-            responses = data.get("Responses")
-            if not isinstance(responses, list):
-                responses = []
-            data["Responses"] = responses
-
-            safe_docs.append((ref.id, data))
-        except Exception:
-            continue
-
-    return safe_docs
-
-
-
-safe_docs = load_safe_student_responses(db)
-
-# Build student_map: roll -> list of {section, doc_id, data}
-student_map = {}
-for doc_id, data in safe_docs:
-    roll = data["Roll"]
-    section = data["Section"]
-    student_map.setdefault(roll, []).append(
-        {"section": section, "doc_id": doc_id, "data": data}
-    )
-
-if not student_map:
+if not student_data:
     st.info("No student responses found in Firestore.")
     st.stop()
 
+# Group by roll number
+student_map = {}
+for data in student_data:
+    roll = data["roll"]
+    if roll not in student_map:
+        student_map[roll] = []
+    student_map[roll].append(data)
+
 # ---------------------------------------------------------------
-# LOAD CSV QUESTION BANKS
+# LOAD QUESTION BANKS
 # ---------------------------------------------------------------
 @st.cache_data
 def load_questions():
-    return {
-        "Aptitude Test": pd.read_csv("aptitude.csv"),
-        "Adaptability & Learning": pd.read_csv("adaptability_learning.csv"),
-        "Communication Skills - Objective": pd.read_csv("communication_skills_objective.csv"),
-        "Communication Skills - Descriptive": pd.read_csv("communication_skills_descriptive.csv"),
+    question_banks = {}
+    csv_files = {
+        "Aptitude Test": "aptitude.csv",
+        "Adaptability & Learning": "adaptability_learning.csv", 
+        "Communication Skills - Objective": "communcation_skills_objective.csv",
+        "Communication Skills - Descriptive": "communcation_skills_descriptive.csv",
     }
-
+    
+    for section, filename in csv_files.items():
+        try:
+            question_banks[section] = pd.read_csv(filename)
+        except Exception as e:
+            st.error(f"Error loading {filename}: {e}")
+    
+    return question_banks
 
 question_banks = load_questions()
 
-# Manual evaluation is needed for:
+# Manual evaluation sections
 MANUAL_EVAL_TESTS = [
-    "Aptitude Test",
-    "Communication Skills - Descriptive",
+    "Aptitude Test", 
+    "Communication Skills - Descriptive"
 ]
 
 # ---------------------------------------------------------------
-# HELPERS FOR MARKING
+# STUDENT SELECTION
 # ---------------------------------------------------------------
-def get_correct_answer(row):
-    for col in ["Answer", "CorrectAnswer", "Correct", "Ans", "AnswerKey", "RightAnswer"]:
-        if col in row and not pd.isna(row[col]):
-            return str(row[col]).strip()
-    return None
-
-
-def likert_to_score(v):
-    v = int(v)
-    if v == 1:
-        return 0
-    if v == 2:
-        return 1
-    if v == 3:
-        return 2
-    if v in [4, 5]:
-        return 3
-    return 0
-
-
-def calc_mcq(df, responses):
-    score = 0
-    for r in responses:
-        qid = str(r.get("QuestionID", ""))
-        student_ans = str(r.get("Response", "")).strip()
-        row_df = df[df["QuestionID"].astype(str) == qid]
-        if row_df.empty:
-            continue
-        row = row_df.iloc[0]
-        if str(row.get("Type", "")).strip().lower() != "mcq":
-            continue
-        correct = get_correct_answer(row)
-        if correct and student_ans == correct:
-            score += 1
-    return score
-
-
-def calc_likert(df, responses):
-    total = 0
-    for r in responses:
-        qid = str(r.get("QuestionID", ""))
-        ans = r.get("Response", None)
-        row_df = df[df["QuestionID"].astype(str) == qid]
-        if row_df.empty:
-            continue
-        row = row_df.iloc[0]
-        if str(row.get("Type", "")).strip().lower() != "likert":
-            continue
-        try:
-            total += likert_to_score(int(ans))
-        except Exception:
-            continue
-    return total
-
-
-def is_evaluated_local(doc_data):
-    ev = doc_data.get("Evaluation", {})
-    # treat as evaluated if we at least have any stored totals
-    return (
-        "mcq_total" in ev
-        or "likert_total" in ev
-        or "text_total" in ev
-        or "final_total" in ev
-    )
-
-
-# ---------------------------------------------------------------
-# AUTO-EVALUATE MCQ + LIKERT FOR THE SELECTED STUDENT
-# ---------------------------------------------------------------
-def auto_evaluate_for_student(roll):
-    """Compute mcq_total & likert_total for each section for this student."""
-    entries = student_map[roll]
-    for entry in entries:
-        section = entry["section"]
-        data = entry["data"]
-        doc_id = entry["doc_id"]
-
-        df = question_banks.get(section)
-        if df is None:
-            continue
-
-        responses = data.get("Responses", [])
-        mcq = calc_mcq(df, responses)
-        likert = calc_likert(df, responses)
-
-        ev = data.get("Evaluation", {})
-        ev["mcq_total"] = mcq
-        ev["likert_total"] = likert
-        ev["final_total"] = mcq + likert + ev.get("text_total", 0)
-
-        data["Evaluation"] = ev  # update local cache
-        # Persist back to Firestore
-        db.collection("student_responses").document(doc_id).set(
-            {"Evaluation": ev}, merge=True
-        )
-
-
-def compute_totals_for_student(roll, override_section=None, override_text_total=None):
-    """
-    Compute:
-      mcq_sum_all, likert_sum_all, text_sum_all, grand_total
-    If override_section + override_text_total given,
-    that section uses the override value instead of stored text_total.
-    """
-    mcq_sum = 0
-    likert_sum = 0
-    text_sum = 0
-
-    for entry in student_map[roll]:
-        section = entry["section"]
-        data = entry["data"]
-        ev = data.get("Evaluation", {})
-
-        mcq_sum += ev.get("mcq_total", 0)
-        likert_sum += ev.get("likert_total", 0)
-
-        t = ev.get("text_total", 0)
-        if override_section is not None and section == override_section:
-            if override_text_total is not None:
-                t = override_text_total
-        text_sum += t
-
-    grand_total = mcq_sum + likert_sum + text_sum
-    return mcq_sum, likert_sum, text_sum, grand_total
-
-
-# ---------------------------------------------------------------
-# UI – SELECT STUDENT
-# ---------------------------------------------------------------
-def student_label(roll):
-    docs = student_map[roll]
-    done = sum(1 for e in docs if is_evaluated_local(e["data"]))
-    total = len(docs)
-    return f"{roll} ({done}/{total} evaluated)"
-
+st.subheader("Select Student")
 
 all_students = sorted(student_map.keys())
-selected_roll = st.selectbox(
-    "Select Student Roll Number", all_students, format_func=student_label
-)
-
-# Run auto-eval for this student
-auto_evaluate_for_student(selected_roll)
-
-# ---------------------------------------------------------------
-# UI – SELECT TEST FOR MANUAL EVALUATION
-# ---------------------------------------------------------------
-# Intersection of student's sections with manual-eval tests
-student_sections = [e["section"] for e in student_map[selected_roll]]
-tests_taken = [s for s in student_sections if s in MANUAL_EVAL_TESTS]
-
-if not tests_taken:
-    st.success("No manual evaluation needed for this student (all auto).")
-    # Still show their auto totals:
-    mcq_total, likert_total, text_total_all, grand_total = compute_totals_for_student(
-        selected_roll
-    )
-    st.write(f"**MCQ Score (Auto): {mcq_total}**")
-    st.write(f"**Likert Score (Auto): {likert_total}**")
-    st.write(f"**Text Marks (All Tests): {text_total_all}**")
-    st.subheader(f"GRAND TOTAL (All Tests) = {grand_total}")
+if not all_students:
+    st.info("No students found.")
     st.stop()
 
+selected_roll = st.selectbox("Select Student Roll Number", all_students)
 
-def section_label(section):
-    entry = next(e for e in student_map[selected_roll] if e["section"] == section)
-    return f"{section} ({'✔' if is_evaluated_local(entry['data']) else '✖'})"
+# Get selected student's data
+student_sections_data = student_map[selected_roll]
 
-
-selected_test = st.selectbox(
-    "Select Test for Manual Evaluation",
-    tests_taken,
-    format_func=section_label,
-)
+# Show student info
+if student_sections_data:
+    student_name = student_sections_data[0].get("name", "Unknown")
+    st.write(f"**Student:** {student_name}")
+    st.write(f"**Roll:** {selected_roll}")
+    st.write(f"**Tests Taken:** {len(student_sections_data)}")
 
 # ---------------------------------------------------------------
-# LOAD CURRENT TEST DATA
+# SECTION SELECTION
 # ---------------------------------------------------------------
-current_entry = next(
-    e for e in student_map[selected_roll] if e["section"] == selected_test
-)
-current_doc_id = current_entry["doc_id"]
-current_data = current_entry["data"]
-current_ev = current_data.get("Evaluation", {})
+st.subheader("Select Test for Evaluation")
 
-df = question_banks[selected_test]
-responses = current_data.get("Responses", [])
+# Get sections that need manual evaluation
+manual_eval_sections = []
+for data in student_sections_data:
+    section = data["section"]
+    if section in MANUAL_EVAL_TESTS:
+        manual_eval_sections.append(section)
 
-short_df = df[df["Type"].astype(str).str.lower() == "short"]
+if not manual_eval_sections:
+    st.info("No manual evaluation needed for this student.")
+    st.stop()
 
-st.subheader(f"Manual Evaluation – {selected_test}")
+selected_section = st.selectbox("Select Section", manual_eval_sections)
 
+# Get the selected section data
+selected_section_data = None
+for data in student_sections_data:
+    if data["section"] == selected_section:
+        selected_section_data = data
+        break
+
+if not selected_section_data:
+    st.error("Selected section data not found.")
+    st.stop()
+
+# ---------------------------------------------------------------
+# EVALUATION INTERFACE
+# ---------------------------------------------------------------
+st.subheader(f"Evaluation: {selected_section}")
+
+# Load questions for this section
+if selected_section not in question_banks:
+    st.error(f"Question bank not found for {selected_section}")
+    st.stop()
+
+df = question_banks[selected_section]
+short_questions = df[df["Type"].str.lower() == "short"]
+
+if short_questions.empty:
+    st.info("No descriptive questions to evaluate in this section.")
+    st.stop()
+
+# Get existing evaluation marks
+existing_marks = selected_section_data.get("evaluation", {}).get("text_marks", {})
+current_responses = selected_section_data.get("responses", [])
+
+# Evaluation interface
 marks_given = {}
-text_total_display = 0
+total_marks = 0
 
-prev_marks = current_ev.get("text_marks", {})
-
-# ---------------------------------------------------------------
-# QUESTION-BY-QUESTION MARKING
-# 0/1 vs 0/1/2/3 logic preserved exactly
-# ---------------------------------------------------------------
-for _, row in short_df.iterrows():
+for _, row in short_questions.iterrows():
     qid = str(row["QuestionID"])
     qtext = str(row["Question"])
-
-    # Find student's answer for this QuestionID
-    student_ans = next(
-        (r.get("Response", "(no answer)") for r in responses
-         if str(r.get("QuestionID", "")) == qid),
-        "(no answer)",
-    )
-
-    # Your original rule: if question text contains "3" -> 0/1/2/3 else 0/1
+    
+    # Find student's response
+    student_response = "(No response)"
+    for resp in current_responses:
+        if str(resp.get("QuestionID", "")) == qid:
+            student_response = str(resp.get("Response", "(No response)"))
+            break
+    
+    # Determine marking scale
     if "3" in qtext.lower():
         scale = [0, 1, 2, 3]
     else:
         scale = [0, 1]
-
-    previous_mark = prev_marks.get(qid, 0)
-    try:
-        default_index = scale.index(previous_mark)
-    except ValueError:
-        default_index = 0
-
-    with st.expander(f"{qid}: {qtext}", expanded=True):
-        st.markdown(f"**Student Answer:** {student_ans}")
+    
+    # Get previous mark if exists
+    previous_mark = existing_marks.get(qid, 0)
+    
+    with st.expander(f"Q{qid}: {qtext}", expanded=True):
+        st.write(f"**Student's Answer:** {student_response}")
+        
         mark = st.radio(
-            "Marks:",
-            scale,
+            "Score:",
+            options=scale,
+            index=scale.index(previous_mark) if previous_mark in scale else 0,
             horizontal=True,
-            index=default_index,
-            key=f"{selected_roll}_{selected_test}_{qid}",
+            key=f"mark_{selected_roll}_{selected_section}_{qid}"
         )
+        
+        marks_given[qid] = mark
+        total_marks += mark
 
-    marks_given[qid] = mark
-    text_total_display += mark
-
-# ---------------------------------------------------------------
-# SHOW AUTO TOTALS + TEXT MARKS + GRAND TOTAL (PREVIEW)
-# ---------------------------------------------------------------
-st.markdown("---")
-
-mcq_total, likert_total, text_total_all, grand_total = compute_totals_for_student(
-    selected_roll,
-    override_section=selected_test,
-    override_text_total=text_total_display,
-)
-
-st.write(f"**MCQ Score (Auto): {mcq_total}**")
-st.write(f"**Likert Score (Auto): {likert_total}**")
-st.write(f"**Text Marks (This Test): {text_total_display}**")
-st.write(f"**Text Marks (All Tests, including this one): {text_total_all - current_ev.get('text_total', 0) + text_total_display}**")
-st.subheader(f"GRAND TOTAL (All Tests) = {grand_total}")
+# Display totals
+st.subheader("Marks Summary")
+st.write(f"**Total Marks for {selected_section}:** {total_marks}")
 
 # ---------------------------------------------------------------
-# SAVE TO FIRESTORE
+# SAVE EVALUATION
 # ---------------------------------------------------------------
-if st.button("💾 Save Evaluation for this Test"):
-    new_ev = current_data.get("Evaluation", {})
-    new_ev["text_marks"] = marks_given
-    new_ev["text_total"] = text_total_display
-    new_ev["final_total"] = (
-        new_ev.get("mcq_total", 0)
-        + new_ev.get("likert_total", 0)
-        + new_ev.get("text_total", 0)
-    )
+if st.button("💾 Save Evaluation"):
+    try:
+        # Update evaluation data
+        evaluation_data = selected_section_data.get("evaluation", {})
+        evaluation_data["text_marks"] = marks_given
+        evaluation_data["text_total"] = total_marks
+        
+        # Calculate final total (you can add MCQ and Likert here later)
+        evaluation_data["final_total"] = total_marks
+        
+        # Save to Firestore
+        doc_ref = db.collection("student_responses").document(selected_section_data["doc_id"])
+        doc_ref.set({
+            "Evaluation": evaluation_data
+        }, merge=True)
+        
+        st.success("✅ Evaluation saved successfully!")
+        
+    except Exception as e:
+        st.error(f"❌ Error saving evaluation: {e}")
 
-    # Update local cache
-    current_data["Evaluation"] = new_ev
-    current_entry["data"] = current_data
+# ---------------------------------------------------------------
+# SHOW ALL EVALUATIONS FOR THIS STUDENT
+# ---------------------------------------------------------------
+st.subheader("All Evaluations for This Student")
 
-    db.collection("student_responses").document(current_doc_id).set(
-        {"Evaluation": new_ev}, merge=True
-    )
-
-    st.success("Evaluation saved successfully ✅")
+for data in student_sections_data:
+    section = data["section"]
+    evaluation = data.get("evaluation", {})
+    text_total = evaluation.get("text_total", 0)
+    mcq_total = evaluation.get("mcq_total", 0)
+    likert_total = evaluation.get("likert_total", 0)
+    final_total = evaluation.get("final_total", 0)
+    
+    st.write(f"**{section}:** Text={text_total}, MCQ={mcq_total}, Likert={likert_total}, Total={final_total}")
