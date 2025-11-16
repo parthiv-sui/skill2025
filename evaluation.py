@@ -154,3 +154,102 @@ for doc in docs:
     if roll is None or section is None:
         continue
     if roll not in student_map:
+        student_map[roll] = []
+    student_map[roll].append((section, doc.id))
+
+
+# ---------------------------------------------------------------
+# UI — SELECT STUDENT
+# ---------------------------------------------------------------
+all_students = sorted(student_map.keys())
+selected_roll = st.selectbox("Select Student", all_students)
+
+
+# ---------------------------------------------------------------
+# AUTO-EVALUATE FOR MCQ + LIKERT TESTS
+# ---------------------------------------------------------------
+mcq_auto_sum = 0
+likert_auto_sum = 0
+
+for section, doc_id in student_map[selected_roll]:
+    if section in AUTO_EVAL_TESTS:
+        doc_data = db.collection("student_responses").document(doc_id).get().to_dict()
+        df = question_banks[section]
+        responses = doc_data["Responses"]
+        mcq, likert = auto_evaluate_and_save(doc_id, df, responses)
+        mcq_auto_sum += mcq
+        likert_auto_sum += likert
+
+
+# ---------------------------------------------------------------
+# MANUAL TEST SELECTOR
+# ---------------------------------------------------------------
+tests_taken = [t[0] for t in student_map[selected_roll] if t[0] in MANUAL_EVAL_TESTS]
+
+if len(tests_taken) == 0:
+    st.success("All tests auto-evaluated.")
+    grand = compute_grand_total(selected_roll)
+    st.subheader(f"GRAND TOTAL (All Tests) = {grand}")
+    st.stop()
+
+selected_test = st.selectbox("Select Test for Manual Evaluation", tests_taken)
+
+# Get document ID
+doc_id = None
+for sec, d_id in student_map[selected_roll]:
+    if sec == selected_test:
+        doc_id = d_id
+        break
+
+doc_data = db.collection("student_responses").document(doc_id).get().to_dict()
+df = question_banks[selected_test]
+responses = doc_data["Responses"]
+short_df = df[df["Type"] == "short"]
+
+
+# ---------------------------------------------------------------
+# FACULTY TEXT MARK ENTRY
+# ---------------------------------------------------------------
+text_total = 0
+marks_given = {}
+
+st.markdown("### 📝 Manual Marking")
+
+for _, row in short_df.iterrows():
+    qid = str(row["QuestionID"])
+    question = row["Question"]
+
+    student_ans = next((x["Response"] for x in responses if str(x["QuestionID"]) == qid), "(no answer)")
+
+    with st.expander(f"Q{qid}: {question}", expanded=False):
+        st.markdown(f"**Student Answer:** {student_ans}")
+        mark = st.radio("Marks:", [0, 1, 2, 3], horizontal=True, key=f"mark_{qid}")
+        marks_given[qid] = mark
+        text_total += mark
+
+
+# ---------------------------------------------------------------
+# TOTALS DISPLAY
+# ---------------------------------------------------------------
+grand_total = compute_grand_total(selected_roll)
+
+st.subheader(f"MCQ Score (Auto): {mcq_auto_sum}")
+st.subheader(f"Likert Score (Auto): {likert_auto_sum}")
+st.subheader(f"Text Marks (This Test): {text_total}")
+
+st.markdown("---")
+final_grand = mcq_auto_sum + likert_auto_sum + text_total
+st.subheader(f"GRAND TOTAL (All Tests) = {final_grand}")
+
+
+# ---------------------------------------------------------------
+# SAVE EVALUATION
+# ---------------------------------------------------------------
+if st.button("💾 Save Evaluation"):
+    db.collection("student_responses").document(doc_id).set({
+        "Evaluation": {
+            "text_total": text_total,
+            "text_marks": marks_given
+        }
+    }, merge=True)
+    st.success("Saved Successfully!")
