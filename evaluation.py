@@ -1,3 +1,4 @@
+# @Gemini: Debug this Firebase data loading issue - why is student_data empty?
 import streamlit as st
 import pandas as pd
 import json
