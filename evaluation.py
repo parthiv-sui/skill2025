@@ -441,7 +441,7 @@ if st.button("💾 Save Evaluation for This Test"):
 **Likert (This Test):** {likert_sel}  
 **Text Marks:** {text_sel}  
 
-### 👉 FINAL SCORE (THIS TEST): **{final_sel}**  
+### FINAL SCORE (THIS TEST): **{final_sel}**  
 ### ⭐ UPDATED GRAND TOTAL (ALL TESTS): **{new_grand_total}**
 
 You can now change student or switch tests.
