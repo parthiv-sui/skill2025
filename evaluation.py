@@ -7,302 +7,279 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-
 # ---------------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------------
 st.set_page_config(page_title="Faculty Evaluation Dashboard", layout="wide")
 st.title("👩‍🏫 Faculty Evaluation Dashboard")
 
-st.caption("DEBUG MODE: On – temporary logs are shown to avoid blank screen issues.")
-
-
 # ---------------------------------------------------------------
-# FIREBASE INITIALIZATION (SAFE)
+# FIREBASE INITIALIZATION
 # ---------------------------------------------------------------
 @st.cache_resource
 def init_firebase():
     try:
         if firebase_admin._apps:
-            st.write("✅ DEBUG: Firebase already initialized – using existing app.")
             return firestore.client()
 
-        # Prefer Streamlit secrets
         if "firebase" in st.secrets:
             cfg = dict(st.secrets["firebase"])
-            cred = credentials.Certificate(cfg)
-            firebase_admin.initialize_app(cred)
-            st.write("✅ DEBUG: Firebase initialized from st.secrets['firebase'].")
         else:
-            # Local fallback
-            with open("firebase_key.json", "r", encoding="utf-8") as f:
+            with open("firebase_key.json", "r") as f:
                 cfg = json.load(f)
-            cred = credentials.Certificate(cfg)
-            firebase_admin.initialize_app(cred)
-            st.write("✅ DEBUG: Firebase initialized from local firebase_key.json.")
 
+        cred = credentials.Certificate(cfg)
+        firebase_admin.initialize_app(cred)
         return firestore.client()
 
     except Exception as e:
         st.error(f"❌ Firebase initialization failed: {e}")
         return None
 
-
 db = init_firebase()
 if db is None:
-    st.error("Cannot continue without Firestore connection.")
-    # We still don't hard-stop; UI will just not show data.
     st.stop()
 
+# ---------------------------------------------------------------
+# QUESTION BANKS
+# ---------------------------------------------------------------
+QUESTION_FILES = {
+    "Aptitude Test": "aptitude.csv",
+    "Adaptability & Learning": "adaptability_learning.csv",
+    "Communication Skills - Objective": "communication_skills_objective.csv",
+    "Communication Skills - Descriptive": "communication_skills_descriptive.csv",
+}
 
-# ---------------------------------------------------------------
-# LOAD QUESTION BANKS
-# ---------------------------------------------------------------
 @st.cache_data
-def load_question_banks() -> Dict[str, pd.DataFrame]:
-    files = {
-        "Aptitude Test": "aptitude.csv",
-        "Adaptability & Learning": "adaptability_learning.csv",
-        "Communication Skills - Objective": "communication_skills_objective.csv",
-        "Communication Skills - Descriptive": "communication_skills_descriptive.csv",
-    }
-
+def load_question_banks():
     banks = {}
-    for section, fname in files.items():
+    for section, fname in QUESTION_FILES.items():
         try:
             df = pd.read_csv(fname)
+            df.columns = [c.strip() for c in df.columns]
+            df["Type"] = df["Type"].astype(str).str.lower()
             banks[section] = df
-            st.write(f"✅ DEBUG: Loaded CSV for section '{section}' with {len(df)} rows.")
         except Exception as e:
-            st.error(f"❌ Could not load CSV '{fname}' for '{section}': {e}")
+            st.error(f"Error loading CSV '{fname}': {e}")
+            banks[section] = pd.DataFrame()
     return banks
-
 
 question_banks = load_question_banks()
 
-AUTO_EVAL_TESTS = [
-    "Adaptability & Learning",
-    "Communication Skills - Objective",
-]
+AUTO_TESTS = ["Adaptability & Learning", "Communication Skills - Objective"]
+MANUAL_TESTS = ["Aptitude Test", "Communication Skills - Descriptive"]
 
-MANUAL_EVAL_TESTS = [
-    "Aptitude Test",
-    "Communication Skills - Descriptive",
-]
+# ---------------------------------------------------------------
+# FIXED MARKING QID LISTS (YOUR METHOD A)
+# ---------------------------------------------------------------
+FOUR_MARK_QIDS = {12, 13, 14, 16, 17, 18}
+THREE_MARK_QIDS = {22, 23, 24, 25, 28, 29, 30, 34}
 
-ALL_KNOWN_TESTS = list(question_banks.keys())
+def parse_qid(q):
+    s = str(q).replace("Q", "").strip()
+    try:
+        return int(s)
+    except:
+        return -1
+
+def scale_for_qid(qid):
+    q = parse_qid(qid)
+    if q in FOUR_MARK_QIDS:
+        return [0, 1, 2, 3]
+    if q in THREE_MARK_QIDS:
+        return [0, 1, 2]
+    return [0, 1]
+
+# ---------------------------------------------------------------
+# LOAD STUDENT RESPONSES FROM FIRESTORE
+# ---------------------------------------------------------------
+def load_students():
+    roll_map = {}
+    try:
+        doc_refs = list(db.collection("student_responses").list_documents())
+    except Exception as e:
+        st.error(f"Error loading Firestore: {e}")
+        return {}
+
+    for ref in doc_refs:
+        snap = ref.get()
+        if not snap.exists:
+            continue
+        data = snap.to_dict()
+        roll = data.get("Roll")
+        section = data.get("Section")
+        if not roll or not section:
+            continue
+
+        responses = data.get("Responses")
+        if not isinstance(responses, list):
+            responses = []
+        data["Responses"] = responses
+
+        if roll not in roll_map:
+            roll_map[roll] = []
+        roll_map[roll].append((ref.id, data))
+
+    return roll_map
+
+roll_to_docs = load_students()
+if not roll_to_docs:
+    st.warning("No student responses found.")
+    st.stop()
+
+# Student dropdown
+rolls_sorted = sorted(roll_to_docs.keys())
+selected_roll = st.selectbox("Select Student Roll Number", rolls_sorted)
+
+docs_for_roll = roll_to_docs[selected_roll]
 
 
 # ---------------------------------------------------------------
-# HELPER FUNCTIONS – SCORING
+# SCORING FUNCTIONS (FINAL, CORRECTED)
 # ---------------------------------------------------------------
+
 def get_correct_answer(row: pd.Series):
+    """Return correct MCQ answer from any supported column name."""
     for col in ["Answer", "CorrectAnswer", "Correct", "Ans", "AnswerKey", "RightAnswer"]:
-        if col in row and not pd.isna(row[col]):
+        if col in row and pd.notna(row[col]):
             return str(row[col]).strip()
     return None
 
 
-def likert_to_score(v: int) -> int:
-    """
-    Mapping requested:
-        Likert 1,2,3,4,5 -> 0,1,2,3,4
-    """
-    try:
-        v = int(v)
-    except Exception:
-        return 0
-    return max(0, min(4, v - 1))
-
-
 def calc_mcq(df: pd.DataFrame, responses: List[Dict]) -> int:
-    if df is None or responses is None:
+    """
+    Final MCQ scoring:
+    - Matches QuestionID EXACTLY (string comparison)
+    - Uses Answer column from CSV
+    - Only Type='mcq' questions counted
+    """
+    if df is None or len(df) == 0:
         return 0
+    if responses is None:
+        return 0
+
     score = 0
-    # Pre-index by QuestionID for speed
     df_idx = df.set_index(df["QuestionID"].astype(str), drop=False)
+
     for r in responses:
         qid = str(r.get("QuestionID", "")).strip()
-        student_ans = str(r.get("Response", "")).strip()
-        if qid == "" or student_ans == "":
+        stu_ans = str(r.get("Response", "")).strip()
+
+        if not qid or not stu_ans:
             continue
-        if qid not in df_idx.index:
+
+        if qid not in df_idx.index:  # IMPORTANT: earlier bug fixed
             continue
+
         row = df_idx.loc[qid]
-        if str(row.get("Type", "")).strip().lower() != "mcq":
+        if str(row.get("Type", "")).lower() != "mcq":
             continue
+
         correct = get_correct_answer(row)
-        if correct and student_ans == correct:
+        if correct and stu_ans == correct:
             score += 1
+
     return score
 
 
-def calc_likert(df: pd.DataFrame, responses: List[Dict]) -> int:
-    if df is None or responses is None:
+def likert_to_score(value: int) -> int:
+    """
+    Likert mapping (YOUR CHOICE):
+        1 → 0
+        2 → 1
+        3 → 2
+        4 → 3
+        5 → 4
+    """
+    try:
+        v = int(value)
+        return max(0, min(4, v - 1))
+    except:
         return 0
+
+
+def calc_likert(df: pd.DataFrame, responses: List[Dict]) -> int:
+    """
+    Final Likert scoring:
+    - Only Type='likert'
+    - Uses exact QuestionID match
+    - Applies mapping above
+    """
+    if df is None or len(df) == 0:
+        return 0
+    if responses is None:
+        return 0
+
     total = 0
     df_idx = df.set_index(df["QuestionID"].astype(str), drop=False)
+
     for r in responses:
         qid = str(r.get("QuestionID", "")).strip()
-        ans = r.get("Response", None)
-        if qid == "" or ans is None:
+        raw = r.get("Response", "")
+
+        if not qid or qid not in df_idx.index:
             continue
-        if qid not in df_idx.index:
-            continue
+
         row = df_idx.loc[qid]
-        if str(row.get("Type", "")).strip().lower() != "likert":
+        if str(row.get("Type", "")).lower() != "likert":
             continue
+
         try:
-            total += likert_to_score(int(ans))
-        except Exception:
+            val = int(raw)
+            total += likert_to_score(val)
+        except:
             continue
+
     return total
 
 
-def infer_mark_scale(question_text: str):
-    """
-    Heuristic:
-      - If the question mentions '3' or 'three' -> 0/1/2/3
-      - Otherwise -> 0/1
-    """
-    q = question_text.lower()
-    if " 3 " in f" {q} " or "three" in q:
-        return [0, 1, 2, 3]
-    return [0, 1]
-
-
 # ---------------------------------------------------------------
-# LOAD STUDENT RESPONSES SAFELY
+# AUTO-SCORE ALL TESTS FOR THIS STUDENT (IN-MEMORY ONLY)
 # ---------------------------------------------------------------
-def load_safe_student_responses():
-    """
-    Uses list_documents() (fast & safe) instead of stream().
-    Returns:
-        dict[roll] -> List[(doc_id, data_dict)]
-    """
-    roll_map: Dict[str, List[Tuple[str, Dict]]] = {}
-    try:
-        doc_refs = db.collection("student_responses").list_documents()
-        refs_list = list(doc_refs)
-        st.write(f"✅ DEBUG: Found {len(refs_list)} documents in 'student_responses'.")
-    except Exception as e:
-        st.error(f"❌ Error listing Firestore documents: {e}")
-        return roll_map
-
-    for ref in refs_list:
-        try:
-            snap = ref.get()
-            if not snap.exists:
-                continue
-            data = snap.to_dict() or {}
-            roll = data.get("Roll")
-            section = data.get("Section")
-            if not roll or not section:
-                continue
-
-            # Normalise responses
-            responses = data.get("Responses")
-            if not isinstance(responses, list):
-                responses = []
-            data["Responses"] = responses
-
-            if roll not in roll_map:
-                roll_map[roll] = []
-            roll_map[roll].append((ref.id, data))
-        except Exception as e:
-            st.write(f"⚠️ DEBUG: Skipping a document due to error: {e}")
-            continue
-
-    return roll_map
-
-
-roll_to_docs = load_safe_student_responses()
-if not roll_to_docs:
-    st.warning("No student_responses documents found. Nothing to evaluate yet.")
-    st.stop()
-
-
-# ---------------------------------------------------------------
-# BUILD STUDENT DROPDOWN WITH EVALUATION STATUS
-# ---------------------------------------------------------------
-def has_any_text_marks(doc_list: List[Tuple[str, Dict]]) -> bool:
-    for _doc_id, data in doc_list:
-        eval_data = data.get("Evaluation", {})
-        text_total = eval_data.get("text_total", 0)
-        if text_total and text_total > 0:
-            return True
-    return False
-
-
-# Construct labels showing ✔ if evaluated
-roll_labels = []
-sorted_rolls = sorted(roll_to_docs.keys())
-for r in sorted_rolls:
-    mark = "✔" if has_any_text_marks(roll_to_docs[r]) else "✖"
-    roll_labels.append(f"{r}  ({mark})")
-
-label_to_roll = {label: roll for label, roll in zip(roll_labels, sorted_rolls)}
-
-selected_label = st.selectbox("Select Student Roll Number", roll_labels)
-selected_roll = label_to_roll[selected_label]
-
-st.write(f"✅ DEBUG: Selected roll = {selected_roll}")
-
-docs_for_roll = roll_to_docs.get(selected_roll, [])
-
-
-# ---------------------------------------------------------------
-# AUTO-SCORE ACROSS ALL TESTS (IN MEMORY ONLY)
-# ---------------------------------------------------------------
-def compute_auto_totals_for_roll(doc_list: List[Tuple[str, Dict]]):
+def compute_auto_totals(doc_list: List[Tuple[str, Dict]]):
     total_mcq = 0
     total_likert = 0
-    per_doc_scores = {}  # doc_id -> (mcq, likert)
+    per_doc = {}
+
     for doc_id, data in doc_list:
         section = data.get("Section")
-        df = question_banks.get(section)
-        responses = data.get("Responses", [])
+        df = question_banks.get(section, pd.DataFrame())
+        responses = data.get("Responses") or []
+
         mcq = calc_mcq(df, responses)
         likert = calc_likert(df, responses)
+
+        per_doc[doc_id] = (mcq, likert)
         total_mcq += mcq
         total_likert += likert
-        per_doc_scores[doc_id] = (mcq, likert)
-    return total_mcq, total_likert, per_doc_scores
 
-
-auto_mcq_total, auto_likert_total, per_doc_auto = compute_auto_totals_for_roll(docs_for_roll)
-st.write(f"✅ DEBUG: Auto MCQ total={auto_mcq_total}, Auto Likert total={auto_likert_total}")
-
+    return total_mcq, total_likert, per_doc
 
 # ---------------------------------------------------------------
-# MANUAL EVALUATION – SELECT TEST
+# MANUAL EVALUATION UI — FAST, NO AUTO CALCULATION
 # ---------------------------------------------------------------
-tests_taken_manual = []
+
+# Which manual tests exist for this student?
+manual_tests_available = []
 for doc_id, data in docs_for_roll:
     section = data.get("Section")
-    if section in MANUAL_EVAL_TESTS:
-        tests_taken_manual.append(section)
+    if section in MANUAL_TESTS:
+        manual_tests_available.append(section)
 
-tests_taken_manual = sorted(set(tests_taken_manual))
+manual_tests_available = sorted(set(manual_tests_available))
 
-if not tests_taken_manual:
-    st.info("This student has no tests requiring manual evaluation.")
-    # Still show the auto scores & overall summary
-    st.subheader(f"MCQ Score (Auto): {auto_mcq_total}")
-    st.subheader(f"Likert Score (Auto): {auto_likert_total}")
-    # Grand total from saved data if any
-    saved_grand = 0
-    for _doc_id, data in docs_for_roll:
-        ev = data.get("Evaluation", {})
-        saved_grand += ev.get("final_total", 0)
-    st.subheader(f"GRAND TOTAL (All Tests) = {saved_grand}")
+if not manual_tests_available:
+    st.info("This student has no manually evaluated tests.")
+    st.subheader(f"Auto MCQ Score: {auto_mcq_total}")
+    st.subheader(f"Auto Likert Score: {auto_likert_total}")
     st.stop()
 
-selected_test = st.selectbox("Select Test for Manual Evaluation", tests_taken_manual)
-st.write(f"✅ DEBUG: Selected test = {selected_test}")
+# ---------------------------------------------
+# Select the manual test to evaluate
+# ---------------------------------------------
+selected_test = st.selectbox("Select Test for Manual Evaluation", manual_tests_available)
 
-
-# Find the Firestore document for this test
+# Find the document for this test
 selected_doc_id = None
 selected_doc_data = None
 for doc_id, data in docs_for_roll:
@@ -311,153 +288,121 @@ for doc_id, data in docs_for_roll:
         selected_doc_data = data
         break
 
-if selected_doc_id is None or selected_doc_data is None:
-    st.error("Could not find Firestore document for selected test.")
-    st.stop()
-
 df_test = question_banks.get(selected_test)
-if df_test is None:
-    st.error(f"No CSV question bank loaded for test '{selected_test}'.")
-    st.stop()
+responses_test = selected_doc_data.get("Responses", [])
+eval_saved = selected_doc_data.get("Evaluation", {})
 
-responses = selected_doc_data.get("Responses", [])
-eval_existing = selected_doc_data.get("Evaluation", {})
-existing_text_marks: Dict[str, int] = eval_existing.get("text_marks", {})
-saved_text_total = eval_existing.get("text_total", 0)
+saved_text_marks = eval_saved.get("text_marks", {})
+saved_text_total = int(eval_saved.get("text_total", 0))
 
-st.write(f"✅ DEBUG: Existing text_total (saved) for this test = {saved_text_total}")
-
-
-# ---------------------------------------------------------------
-# BUILD MANUAL MARKING UI
-# ---------------------------------------------------------------
-# Filter only short/descriptive questions
+# ---------------------------------------------
+# Build UI for short (descriptive) questions ONLY
+# ---------------------------------------------
 short_df = df_test[df_test["Type"].astype(str).str.lower() == "short"]
 
-marks_given: Dict[str, int] = {}
+marks_given = {}
 text_current_total = 0
 
-if short_df.empty:
-    st.info("No 'short' type questions found in CSV for this test – nothing to mark.")
-else:
-    st.markdown("### Manual Text Evaluation")
+st.markdown("## ✍️ Manual Text Evaluation")
 
+if short_df.empty:
+    st.info("No descriptive questions in this test.")
+else:
     for _, row in short_df.iterrows():
-        qid = str(row.get("QuestionID"))
-        qtext = str(row.get("Question", ""))
-        # find student answer from responses
+        qid = str(row["QuestionID"])
+        qtext = str(row["Question"])
+        
+        # get student's answer
         stu_ans = "(no answer)"
-        for r in responses:
+        for r in responses_test:
             if str(r.get("QuestionID")) == qid:
-                stu_ans = str(r.get("Response", "") or "(no answer)")
+                stu_ans = str(r.get("Response", "(no answer)"))
                 break
 
-        scale = infer_mark_scale(qtext)
-        default_mark = int(existing_text_marks.get(qid, 0))
-        if default_mark not in scale:
-            default_mark = 0
+        # marking scale → using your QID lists
+        scale = scale_for_qid(qid)
 
-        # Determine index in radio
-        try:
-            default_index = scale.index(default_mark)
-        except ValueError:
-            default_index = 0
+        # default = previously saved or 0
+        default = saved_text_marks.get(qid, 0)
+        if default not in scale:
+            default = 0
+        default_index = scale.index(default)
 
-        with st.expander(f"{qid}: {qtext}", expanded=True):
-            colA, colB = st.columns([3, 1])
-            with colA:
+        # --------------------------------------
+        # Expander (always expanded)
+        # --------------------------------------
+        with st.expander(f"Q{qid}: {qtext}", expanded=True):
+
+            col1, col2 = st.columns([3, 1])
+
+            with col1:
                 st.markdown(f"**Student Answer:** {stu_ans}")
-            with colB:
+
+            with col2:
                 mark = st.radio(
                     "Marks:",
                     scale,
                     index=default_index,
-                    key=f"{selected_roll}_{selected_test}_{qid}",
                     horizontal=True,
+                    key=f"{selected_roll}_{selected_test}_{qid}"
                 )
-        marks_given[qid] = int(mark)
-        text_current_total += int(mark)
+
+        marks_given[qid] = mark
+        text_current_total += mark
 
 st.markdown("---")
-
-
 # ---------------------------------------------------------------
-# SUMMARY NUMBERS (BEFORE SAVE)
+# CALCULATE BUTTON — FAST, NO AUTO-UPDATE
 # ---------------------------------------------------------------
-st.subheader(f"MCQ Score (Auto): {auto_mcq_total}")
-st.subheader(f"Likert Score (Auto): {auto_likert_total}")
-st.subheader(f"Text Marks (This Test): {text_current_total}")
+st.markdown("## 🧮 Calculate Marks (Preview Only)")
 
-# Saved grand total from Evaluation.final_total if present
-saved_grand_total = 0
-for _doc_id, data in docs_for_roll:
-    ev = data.get("Evaluation", {})
-    saved_grand_total += ev.get("final_total", 0)
-
-st.subheader(f"GRAND TOTAL (All Tests) = {saved_grand_total}")
-st.write("*(Grand total updates after you click **Save Evaluation for this Test**.)*")
-
-
-# ---------------------------------------------------------------
-# SAVE HANDLER
-# ---------------------------------------------------------------
-def recompute_final_for_doc(section: str, df: pd.DataFrame, responses: List[Dict], text_total: int):
-    """
-    Recalculate mcq_total, likert_total & final_total for a single test.
-    """
-    mcq = calc_mcq(df, responses)
-    likert = calc_likert(df, responses)
-    final_total = mcq + likert + text_total
-    return mcq, likert, final_total
-
-
-def recompute_grand_total_for_roll(
-    roll: str,
-    all_docs: List[Tuple[str, Dict]],
-    selected_doc_id: str,
-    new_final_for_selected: int,
-):
-    """
-    Grand total = sum of final_total across all docs.
-    If a doc has no final_total, compute mcq+likert as fallback.
-    """
-    grand = 0
-    for doc_id, data in all_docs:
-        if doc_id == selected_doc_id:
-            grand += new_final_for_selected
-            continue
-
-        ev = data.get("Evaluation", {})
-        if "final_total" in ev:
-            grand += int(ev.get("final_total", 0))
-            continue
-
-        # Fallback compute
-        section = data.get("Section")
-        df = question_banks.get(section)
-        responses = data.get("Responses", [])
-        mcq = calc_mcq(df, responses)
-        likert = calc_likert(df, responses)
-        grand += mcq + likert
-    return grand
-
-
-if st.button("💾 Save Evaluation for this Test"):
+if st.button("📌 Calculate Marks"):
     try:
-        mcq_sel, likert_sel, final_sel = recompute_final_for_doc(
-            selected_test, df_test, responses, text_current_total
+        # Recalculate MCQ & Likert ONLY for this test
+        df_this = df_test
+        responses_this = responses_test
+
+        mcq_sel = calc_mcq(df_this, responses_this)
+        likert_sel = calc_likert(df_this, responses_this)
+
+        final_sel = mcq_sel + likert_sel + text_current_total
+
+        st.success(
+            f"""
+### ✅ Marks Calculated (Preview)
+**MCQ Score (This Test):** {mcq_sel}  
+**Likert Score (This Test):** {likert_sel}  
+**Text Score (This Test):** {text_current_total}  
+
+### 👉 Final Score (This Test): **{final_sel}**
+*(Not saved yet. Press “Save Evaluation for This Test” to store it.)*
+"""
         )
 
-        st.write(
-            f"✅ DEBUG: For this test -> mcq={mcq_sel}, likert={likert_sel}, text={text_current_total}, final={final_sel}"
-        )
+    except Exception as e:
+        st.error(f"❌ Error while calculating marks: {e}")
 
-        # Update selected document Evaluation
+# ---------------------------------------------------------------
+# SAVE BUTTON — FINAL GRAND TOTAL UPDATE
+# ---------------------------------------------------------------
+st.markdown("## 💾 Save Final Evaluation")
+
+if st.button("💾 Save Evaluation for This Test"):
+    try:
+        # -----------------------------------------------------------
+        # 1) Recompute MCQ, Likert, Text, Final for THIS TEST
+        # -----------------------------------------------------------
+        mcq_sel = calc_mcq(df_test, responses_test)
+        likert_sel = calc_likert(df_test, responses_test)
+        text_sel = text_current_total
+        final_sel = mcq_sel + likert_sel + text_sel
+
+        # Update Evaluation block for THIS TEST
         db.collection("student_responses").document(selected_doc_id).set(
             {
                 "Evaluation": {
                     "text_marks": marks_given,
-                    "text_total": text_current_total,
+                    "text_total": text_sel,
                     "mcq_total": mcq_sel,
                     "likert_total": likert_sel,
                     "final_total": final_sel,
@@ -466,21 +411,57 @@ if st.button("💾 Save Evaluation for this Test"):
             merge=True,
         )
 
-        # Recompute grand total for this roll
-        new_grand_total = recompute_grand_total_for_roll(
-            selected_roll, docs_for_roll, selected_doc_id, final_sel
-        )
+        # -----------------------------------------------------------
+        # 2) Recompute GRAND TOTAL across ALL TESTS FOR THIS STUDENT
+        # -----------------------------------------------------------
+        new_grand_total = 0
 
-        # Save grand_total into all docs for this roll (optional but useful)
+        for doc_id, data in docs_for_roll:
+            section = data.get("Section")
+            df = question_banks.get(section, pd.DataFrame())
+            responses = data.get("Responses", [])
+
+            if doc_id == selected_doc_id:
+                # this test uses the newly computed final_sel
+                new_grand_total += final_sel
+                continue
+
+            # for other tests, use saved final_total if present
+            ev = data.get("Evaluation", {})
+            if "final_total" in ev:
+                new_grand_total += int(ev.get("final_total", 0))
+            else:
+                # fallback auto-evaluate (rare)
+                mcq_x = calc_mcq(df, responses)
+                likert_x = calc_likert(df, responses)
+                text_x = int(ev.get("text_total", 0))
+                new_grand_total += mcq_x + likert_x + text_x
+
+        # -----------------------------------------------------------
+        # 3) Save grand_total to ALL documents of this student
+        # -----------------------------------------------------------
         batch = db.batch()
         for doc_id, _ in docs_for_roll:
             ref = db.collection("student_responses").document(doc_id)
             batch.set(ref, {"Evaluation": {"grand_total": new_grand_total}}, merge=True)
         batch.commit()
 
+        # -----------------------------------------------------------
+        # 4) Popup confirmation
+        # -----------------------------------------------------------
         st.success(
-            f"Evaluation saved. New GRAND TOTAL (All Tests) for {selected_roll} = {new_grand_total}."
+            f"""
+### 🎉 Evaluation Saved Successfully!
+**MCQ (This Test):** {mcq_sel}  
+**Likert (This Test):** {likert_sel}  
+**Text Marks:** {text_sel}  
+
+### 👉 Final Score (This Test): **{final_sel}**  
+### ⭐ Updated GRAND TOTAL (All Tests): **{new_grand_total}**
+
+*(You may switch students or tests to continue.)*
+"""
         )
-        st.info("Please rerun the app (or change selection) to see updated totals.")
+
     except Exception as e:
         st.error(f"❌ Error while saving evaluation: {e}")
