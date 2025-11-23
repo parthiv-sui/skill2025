@@ -156,6 +156,40 @@ def load_students():
         roll_map[roll].append((ref.id, data))
     return roll_map
 
+def compute_auto_scores_for_roll(docs_for_roll):
+    """
+    Computes TOTAL MCQ and TOTAL Likert for ALL tests of the student.
+    Returns:
+        doc_scores: {doc_id: {mcq:int, likert:int}}
+        mcq_sum: int
+        likert_sum: int
+    """
+    doc_scores = {}
+    mcq_sum = 0
+    likert_sum = 0
+
+    for section, doc_id in docs_for_roll:
+        df = question_banks.get(section)
+
+        try:
+            snap = db.collection("student_responses").document(doc_id).get()
+            data = snap.to_dict() or {}
+        except:
+            data = {}
+
+        responses = data.get("Responses") or []
+
+        # Evaluate MCQ & Likert
+        mcq = calc_mcq(df, responses)
+        likert = calc_likert(df, responses)
+
+        doc_scores[doc_id] = {"mcq": mcq, "likert": likert}
+        mcq_sum += mcq
+        likert_sum += likert
+
+    return doc_scores, mcq_sum, likert_sum
+
+
 roll_to_docs = load_students()
 if not roll_to_docs:
     st.warning("No student responses available.")
