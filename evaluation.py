@@ -295,6 +295,20 @@ def evaluate_manual_questions(df_test, responses, existing_manual_marks=None):
     return manual_total, manual_marks
 
 # ---------------------------------------------------------
+# CALCULATE GRAND TOTAL
+# ---------------------------------------------------------
+def calculate_grand_total(student_data, current_test_data=None):
+    """Calculate grand total across all tests"""
+    grand_total = 0
+    
+    for item in student_data:
+        test_eval = item.get("evaluation", {})
+        test_final = test_eval.get("final_total", 0)
+        grand_total += test_final
+    
+    return grand_total
+
+# ---------------------------------------------------------
 # MAIN EVALUATION INTERFACE
 # ---------------------------------------------------------
 st.header(f"📊 Evaluating: {selected_test}")
@@ -320,27 +334,16 @@ else:
 # Manual evaluation (always show interface, but use existing marks as defaults)
 manual_total, manual_marks = evaluate_manual_questions(df_test, responses, existing_manual_marks)
 
-# Final calculation
+# Final calculation for current test
 final_score = auto_mcq + auto_likert + manual_total
+
+# Calculate current grand total
+current_grand_total = calculate_grand_total(student_data)
 
 # ---------------------------------------------------------
 # DISPLAY OVERALL PROGRESS & TOTALS
 # ---------------------------------------------------------
 st.header("🎯 Evaluation Progress & Totals")
-
-# Calculate grand total across all tests
-grand_total = 0
-all_tests_data = []
-
-for item in student_data:
-    test_eval = item.get("evaluation", {})
-    test_final = test_eval.get("final_total", 0)
-    grand_total += test_final
-    all_tests_data.append({
-        "Test": item["section"],
-        "Status": "✅ Evaluated" if test_final > 0 else "⏳ Pending",
-        "Score": test_final
-    })
 
 # Display current test scores
 col1, col2, col3, col4, col5 = st.columns(5)
@@ -353,18 +356,29 @@ with col3:
 with col4:
     st.metric("Current Test Score", final_score)
 with col5:
-    st.metric("Grand Total (All Tests)", grand_total)
+    st.metric("Grand Total (All Tests)", current_grand_total)
 
 # Show progress table
 st.subheader("📋 Evaluation Status Across All Tests")
+all_tests_data = []
+for item in student_data:
+    test_eval = item.get("evaluation", {})
+    test_final = test_eval.get("final_total", 0)
+    all_tests_data.append({
+        "Test": item["section"],
+        "Status": "✅ Evaluated" if test_final > 0 else "⏳ Pending",
+        "Score": test_final
+    })
+
 progress_df = pd.DataFrame(all_tests_data)
 st.dataframe(progress_df, use_container_width=True)
 
 # ---------------------------------------------------------
-# SAVE EVALUATION
+# SAVE EVALUATION (WITH GRAND TOTAL UPDATE)
 # ---------------------------------------------------------
 if st.button("💾 Save Current Test Evaluation"):
     try:
+        # First, save the current test evaluation
         evaluation_data = {
             "auto_mcq": auto_mcq,
             "auto_likert": auto_likert,
@@ -374,12 +388,33 @@ if st.button("💾 Save Current Test Evaluation"):
             "evaluated_at": firestore.SERVER_TIMESTAMP
         }
         
-        # Save to Firestore
+        # Save current test evaluation
         db.collection("student_responses").document(doc_id).set({
             "Evaluation": evaluation_data
         }, merge=True)
         
-        st.success("✅ Evaluation saved successfully!")
+        # Recalculate and update grand total for ALL documents of this student
+        updated_grand_total = 0
+        for item in student_data:
+            test_doc_id = item["doc_id"]
+            test_section = item["section"]
+            
+            if test_doc_id == doc_id:
+                # This is the current test we just saved
+                test_final = final_score
+            else:
+                # Get the existing final total from other tests
+                test_eval = item.get("evaluation", {})
+                test_final = test_eval.get("final_total", 0)
+            
+            updated_grand_total += test_final
+            
+            # Update grand total in each document
+            db.collection("student_responses").document(test_doc_id).set({
+                "Evaluation": {"grand_total": updated_grand_total}
+            }, merge=True)
+        
+        st.success(f"✅ Evaluation saved successfully! Grand Total updated to: {updated_grand_total}")
         st.rerun()  # Refresh to show updated scores
         
     except Exception as e:
@@ -414,7 +449,7 @@ if st.button("📊 Download Complete Evaluation Report"):
         "Auto_MCQ_Score": "",
         "Auto_Likert_Score": "",
         "Manual_Total": "",
-        "Test_Score": grand_total
+        "Test_Score": current_grand_total
     }])
     
     final_df = pd.concat([results_df, grand_total_row], ignore_index=True)
@@ -433,15 +468,3 @@ if st.button("📊 Download Complete Evaluation Report"):
     # Show preview
     st.subheader("Report Preview")
     st.dataframe(final_df)
-
-# ---------------------------------------------------------
-# DEBUG INFO (Optional)
-# ---------------------------------------------------------
-with st.expander("🔍 Debug Info"):
-    st.write("### Current Test Details")
-    st.write(f"Test: {selected_test}")
-    st.write(f"Auto MCQ: {auto_mcq}")
-    st.write(f"Auto Likert: {auto_likert}")
-    st.write(f"Manual Total: {manual_total}")
-    st.write(f"Final Score: {final_score}")
-    st.write(f"Grand Total: {grand_total}")
