@@ -46,7 +46,6 @@ def load_csv(fname):
         if 'Type' in df.columns:
             df['Type'] = df['Type'].astype(str).str.lower().str.strip()
         
-        st.success(f"✅ Loaded {fname}: {len(df)} questions")
         return df
     except Exception as e:
         st.error(f"❌ Error loading {fname}: {e}")
@@ -82,7 +81,7 @@ def get_scale_options(qid):
         return [0, 1]  # Default binary scale
 
 # ---------------------------------------------------------
-# LOAD STUDENT DATA
+# LOAD STUDENT DATA WITH EVALUATIONS
 # ---------------------------------------------------------
 @st.cache_data
 def load_all_responses():
@@ -98,11 +97,15 @@ def load_all_responses():
                 if roll not in roll_map:
                     roll_map[roll] = []
                 
+                # Get existing evaluation if available
+                evaluation = data.get("Evaluation", {})
+                
                 roll_map[roll].append({
                     "doc_id": doc.id,
                     "data": data,
                     "section": section,
-                    "responses": data.get("Responses", [])
+                    "responses": data.get("Responses", []),
+                    "evaluation": evaluation
                 })
         return roll_map
     except Exception as e:
@@ -139,6 +142,7 @@ if not selected_doc:
 doc_id = selected_doc["doc_id"]
 doc_data = selected_doc["data"]
 responses = selected_doc["responses"]
+existing_evaluation = selected_doc["evaluation"]
 df_test = banks[selected_test]
 
 # ---------------------------------------------------------
@@ -160,8 +164,6 @@ def calculate_auto_scores(df, responses):
     mcq_score = 0
     likert_score = 0
     
-    st.write("🔍 Debug: Starting auto-scoring...")
-    
     # Create question lookup - handle different ID formats
     q_lookup = {}
     for _, row in df.iterrows():
@@ -173,12 +175,8 @@ def calculate_auto_scores(df, responses):
             if qid_clean.startswith(('A', 'L')) and len(qid_clean) > 1:
                 q_lookup[qid_clean[1:]] = row  # Store "1" for "A1"
     
-    st.write(f"✅ Loaded {len(q_lookup)} questions into lookup")
-    
     # Process each response
     for i, response in enumerate(responses):
-        st.write(f"--- Processing Response {i+1} ---")
-        
         # Extract data based on your Firestore structure
         question_id = None
         student_answer = None
@@ -199,10 +197,7 @@ def calculate_auto_scores(df, responses):
         elif 'answer' in response:
             student_answer = str(response['answer']).strip().lower()
         
-        st.write(f"🔍 Extracted: QID='{question_id}', Answer='{student_answer}'")
-        
         if not question_id or not student_answer:
-            st.write("❌ Missing QID or answer, skipping")
             continue
             
         # Find matching question
@@ -219,26 +214,18 @@ def calculate_auto_scores(df, responses):
         for key in possible_keys:
             if key in q_lookup:
                 question_row = q_lookup[key]
-                st.write(f"✅ Matched: Firestore Q{question_id} -> CSV Q{question_row['QuestionID']}")
                 break
         
         if question_row is None:
-            st.write(f"❌ No CSV match for Q{question_id}")
             continue
             
         # Score the question
         q_type = str(question_row.get("Type", "")).lower().strip()
-        st.write(f"📝 Question Type: {q_type}")
         
         if q_type == "mcq":
             correct_ans = get_correct_answer(question_row)
-            st.write(f"🔍 MCQ Check: Student='{student_answer}', Correct='{correct_ans}'")
-            
             if correct_ans and student_answer == correct_ans:
                 mcq_score += 1
-                st.write("✅ MCQ Correct: +1 point")
-            else:
-                st.write("❌ MCQ Incorrect: +0 points")
                 
         elif q_type == "likert":
             try:
@@ -246,18 +233,16 @@ def calculate_auto_scores(df, responses):
                 # Your scale: 1=0, 2=1, 3=2, 4=3, 5=4
                 points = max(0, min(4, resp_val - 1))
                 likert_score += points
-                st.write(f"✅ Likert: {resp_val} -> {points} points")
             except (ValueError, TypeError):
-                st.write(f"❌ Likert Invalid: '{student_answer}'")
+                pass
     
-    st.success(f"🎯 Auto-scoring Complete: MCQ={mcq_score}, Likert={likert_score}")
     return mcq_score, likert_score
 
-def evaluate_manual_questions(df_test, responses):
+def evaluate_manual_questions(df_test, responses, existing_manual_marks=None):
     """Handle manual evaluation for short answer questions"""
     manual_questions = df_test[df_test["Type"].isin(["short", "descriptive"])]
     manual_total = 0
-    manual_marks = {}
+    manual_marks = existing_manual_marks or {}
     
     if manual_questions.empty:
         st.info("No manual evaluation questions in this test.")
@@ -288,7 +273,11 @@ def evaluate_manual_questions(df_test, responses):
         
         # Get scoring scale
         scale_options = get_scale_options(qid)
-        default_mark = 0
+        
+        # Use existing mark if available, otherwise default to 0
+        default_mark = manual_marks.get(qid, 0)
+        if default_mark not in scale_options:
+            default_mark = 0
         
         # Scoring interface
         mark = st.radio(
@@ -296,7 +285,7 @@ def evaluate_manual_questions(df_test, responses):
             options=scale_options,
             index=scale_options.index(default_mark),
             horizontal=True,
-            key=f"manual_{selected_roll}_{qid}"
+            key=f"manual_{selected_roll}_{selected_test}_{qid}"
         )
         
         manual_marks[qid] = mark
@@ -310,19 +299,51 @@ def evaluate_manual_questions(df_test, responses):
 # ---------------------------------------------------------
 st.header(f"📊 Evaluating: {selected_test}")
 
-# Calculate auto scores first (with detailed debugging)
-with st.expander("🔍 Auto-Scoring Debug", expanded=True):
-    auto_mcq, auto_likert = calculate_auto_scores(df_test, responses)
+# Get existing evaluation data for this test
+existing_auto_mcq = existing_evaluation.get("auto_mcq", 0)
+existing_auto_likert = existing_evaluation.get("auto_likert", 0)
+existing_manual_marks = existing_evaluation.get("manual_marks", {})
+existing_manual_total = existing_evaluation.get("manual_total", 0)
+existing_final_total = existing_evaluation.get("final_total", 0)
 
-# Manual evaluation
-manual_total, manual_marks = evaluate_manual_questions(df_test, responses)
+# Calculate auto scores (use existing if available, otherwise calculate)
+if existing_auto_mcq > 0 or existing_auto_likert > 0:
+    # Use existing scores
+    auto_mcq = existing_auto_mcq
+    auto_likert = existing_auto_likert
+    st.info(f"Using previously calculated auto-scores: MCQ={auto_mcq}, Likert={auto_likert}")
+else:
+    # Calculate fresh scores
+    auto_mcq, auto_likert = calculate_auto_scores(df_test, responses)
+    st.success(f"Fresh auto-scores calculated: MCQ={auto_mcq}, Likert={auto_likert}")
+
+# Manual evaluation (always show interface, but use existing marks as defaults)
+manual_total, manual_marks = evaluate_manual_questions(df_test, responses, existing_manual_marks)
 
 # Final calculation
 final_score = auto_mcq + auto_likert + manual_total
 
-# Display results
-st.subheader("🎯 Final Scores")
-col1, col2, col3, col4 = st.columns(4)
+# ---------------------------------------------------------
+# DISPLAY OVERALL PROGRESS & TOTALS
+# ---------------------------------------------------------
+st.header("🎯 Evaluation Progress & Totals")
+
+# Calculate grand total across all tests
+grand_total = 0
+all_tests_data = []
+
+for item in student_data:
+    test_eval = item.get("evaluation", {})
+    test_final = test_eval.get("final_total", 0)
+    grand_total += test_final
+    all_tests_data.append({
+        "Test": item["section"],
+        "Status": "✅ Evaluated" if test_final > 0 else "⏳ Pending",
+        "Score": test_final
+    })
+
+# Display current test scores
+col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
     st.metric("Auto MCQ Score", auto_mcq)
 with col2:
@@ -330,12 +351,19 @@ with col2:
 with col3:
     st.metric("Manual Evaluation", manual_total)
 with col4:
-    st.metric("Final Score", final_score)
+    st.metric("Current Test Score", final_score)
+with col5:
+    st.metric("Grand Total (All Tests)", grand_total)
+
+# Show progress table
+st.subheader("📋 Evaluation Status Across All Tests")
+progress_df = pd.DataFrame(all_tests_data)
+st.dataframe(progress_df, use_container_width=True)
 
 # ---------------------------------------------------------
 # SAVE EVALUATION
 # ---------------------------------------------------------
-if st.button("💾 Save Evaluation"):
+if st.button("💾 Save Current Test Evaluation"):
     try:
         evaluation_data = {
             "auto_mcq": auto_mcq,
@@ -352,6 +380,7 @@ if st.button("💾 Save Evaluation"):
         }, merge=True)
         
         st.success("✅ Evaluation saved successfully!")
+        st.rerun()  # Refresh to show updated scores
         
     except Exception as e:
         st.error(f"❌ Failed to save evaluation: {e}")
@@ -361,57 +390,58 @@ if st.button("💾 Save Evaluation"):
 # ---------------------------------------------------------
 st.header("📥 Export Results")
 
-if st.button("📊 Download Evaluation as CSV"):
-    # Create results dataframe
-    results_data = {
-        "Roll_Number": [selected_roll],
-        "Test": [selected_test],
-        "Auto_MCQ_Score": [auto_mcq],
-        "Auto_Likert_Score": [auto_likert],
-        "Manual_Total": [manual_total],
-        "Final_Score": [final_score]
-    }
+if st.button("📊 Download Complete Evaluation Report"):
+    # Create comprehensive results dataframe
+    results_data = []
     
-    # Add individual manual question scores
-    for qid, score in manual_marks.items():
-        results_data[f"Q{qid}_Score"] = [score]
+    for item in student_data:
+        test_eval = item.get("evaluation", {})
+        results_data.append({
+            "Roll_Number": selected_roll,
+            "Test": item["section"],
+            "Auto_MCQ_Score": test_eval.get("auto_mcq", 0),
+            "Auto_Likert_Score": test_eval.get("auto_likert", 0),
+            "Manual_Total": test_eval.get("manual_total", 0),
+            "Test_Score": test_eval.get("final_total", 0)
+        })
     
     results_df = pd.DataFrame(results_data)
     
+    # Add grand total row
+    grand_total_row = pd.DataFrame([{
+        "Roll_Number": selected_roll,
+        "Test": "GRAND TOTAL",
+        "Auto_MCQ_Score": "",
+        "Auto_Likert_Score": "",
+        "Manual_Total": "",
+        "Test_Score": grand_total
+    }])
+    
+    final_df = pd.concat([results_df, grand_total_row], ignore_index=True)
+    
     # Convert to CSV
-    csv = results_df.to_csv(index=False)
+    csv = final_df.to_csv(index=False)
     
     # Download button
     st.download_button(
-        label="⬇️ Download CSV File",
+        label="⬇️ Download Complete Report (CSV)",
         data=csv,
-        file_name=f"evaluation_{selected_roll}_{selected_test}.csv",
+        file_name=f"complete_evaluation_{selected_roll}.csv",
         mime="text/csv"
     )
     
     # Show preview
-    st.subheader("CSV Preview")
-    st.dataframe(results_df)
+    st.subheader("Report Preview")
+    st.dataframe(final_df)
 
 # ---------------------------------------------------------
-# DEBUG INFO (Optional - can be removed later)
+# DEBUG INFO (Optional)
 # ---------------------------------------------------------
-with st.expander("🔍 Detailed Debug Info"):
-    st.write("### CSV File Info")
+with st.expander("🔍 Debug Info"):
+    st.write("### Current Test Details")
     st.write(f"Test: {selected_test}")
-    st.write(f"CSV Shape: {df_test.shape}")
-    st.write(f"CSV Columns: {df_test.columns.tolist()}")
-    
-    st.write("### Sample from CSV:")
-    if not df_test.empty:
-        st.dataframe(df_test.head(3)[['QuestionID', 'Type', 'Question']])
-    
-    st.write("### Student Responses:")
-    st.write(f"Total responses: {len(responses)}")
-    for i, resp in enumerate(responses[:5]):
-        st.write(f"Response {i+1}: {resp}")
-    
-    st.write("### Question Type Breakdown in CSV:")
-    if 'Type' in df_test.columns:
-        type_counts = df_test['Type'].value_counts()
-        st.write(type_counts)
+    st.write(f"Auto MCQ: {auto_mcq}")
+    st.write(f"Auto Likert: {auto_likert}")
+    st.write(f"Manual Total: {manual_total}")
+    st.write(f"Final Score: {final_score}")
+    st.write(f"Grand Total: {grand_total}")
