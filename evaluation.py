@@ -288,21 +288,25 @@ def calculate_real_time_totals(student_data, current_test_id, current_test_score
 # ---------------------------------------------------------
 st.header(f"📊 Evaluating: {selected_test}")
 
-# Get existing evaluation data
-existing_auto_mcq = existing_evaluation.get("auto_mcq", 0)
-existing_auto_likert = existing_evaluation.get("auto_likert", 0)
+# FIXED: Get existing evaluation data - check if scores exist (not just if > 0)
+existing_auto_mcq = existing_evaluation.get("auto_mcq", None)
+existing_auto_likert = existing_evaluation.get("auto_likert", None)
 existing_manual_marks = existing_evaluation.get("manual_marks", {})
 existing_manual_total = existing_evaluation.get("manual_total", 0)
 existing_final_total = existing_evaluation.get("final_total", 0)
 
-# Calculate scores
-if existing_auto_mcq > 0 or existing_auto_likert > 0:
+# FIXED: Calculate scores - USE SAVED SCORES IF THEY EXIST
+if existing_auto_mcq is not None and existing_auto_likert is not None:
+    # Use existing saved scores (even if they are 0)
     auto_mcq = existing_auto_mcq
     auto_likert = existing_auto_likert
+    st.info(f"📁 Using saved auto-scores: MCQ={auto_mcq}, Likert={auto_likert}")
 else:
+    # Calculate fresh scores only if no saved data exists
     auto_mcq, auto_likert = calculate_auto_scores(df_test, responses)
+    st.success(f"🔄 Fresh auto-scores calculated: MCQ={auto_mcq}, Likert={auto_likert}")
 
-# Manual evaluation
+# Manual evaluation (always show interface, but use existing marks as defaults)
 manual_total, manual_marks = evaluate_manual_questions(df_test, responses, existing_manual_marks)
 
 # Current test final score
@@ -334,9 +338,12 @@ st.subheader("📋 Test Status")
 progress_df = pd.DataFrame(progress_data)
 st.dataframe(progress_df, use_container_width=True)
 
-# ---------------------------------------------------------
-# SAVE EVALUATION (WITH PROPER GRAND TOTAL)
-# ---------------------------------------------------------
+# Debug information to verify score sources
+with st.expander("🔍 Debug: Score Sources"):
+    st.write(f"Existing Auto MCQ: {existing_auto_mcq}")
+    st.write(f"Existing Auto Likert: {existing_auto_likert}")
+    st.write(f"Using saved scores: {existing_auto_mcq is not None}")
+
 # ---------------------------------------------------------
 # SAVE EVALUATION (WITH IMMEDIATE STATUS UPDATE)
 # ---------------------------------------------------------
@@ -373,9 +380,7 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
         
     except Exception as e:
         st.error(f"❌ Save failed: {e}")
-# ---------------------------------------------------------
-# EXPORT TO CSV
-# ---------------------------------------------------------
+
 # ---------------------------------------------------------
 # EXPORT TO CSV (WITH NA INSTEAD OF 0)
 # ---------------------------------------------------------
