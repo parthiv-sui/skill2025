@@ -373,6 +373,41 @@ for item in student_data:
 progress_df = pd.DataFrame(all_tests_data)
 st.dataframe(progress_df, use_container_width=True)
 
+
+# ---------------------------------------------------------
+# DEBUG SECTION - ADD THIS BEFORE SAVE BUTTON
+# ---------------------------------------------------------
+with st.expander("🔍 DEBUG: Current Calculations"):
+    st.write("### Current Test Scores Breakdown:")
+    st.write(f"- Auto MCQ: {auto_mcq}")
+    st.write(f"- Auto Likert: {auto_likert}")
+    st.write(f"- Manual Total: {manual_total}")
+    st.write(f"- **Current Test Final: {final_score}**")
+    
+    st.write("### All Tests Breakdown (Before Save):")
+    total_calculated = 0
+    for item in student_data:
+        test_name = item["section"]
+        if item["doc_id"] == doc_id:
+            # This is the current test we're editing
+            test_score = final_score
+            status = "🔄 CURRENTLY EDITING"
+        else:
+            test_eval = item.get("evaluation", {})
+            test_score = test_eval.get("final_total", 0)
+            status = "✅ SAVED"
+        
+        total_calculated += test_score
+        st.write(f"- {test_name}: {test_score} ({status})")
+    
+    st.write(f"### **Calculated Grand Total: {total_calculated}**")
+    st.write(f"### **Displayed Grand Total: {current_grand_total}**")
+    
+    if total_calculated != current_grand_total:
+        st.error("❌ MISMATCH: Calculated vs Displayed Grand Total don't match!")
+    else:
+        st.success("✅ Grand Total calculation is correct")
+
 # ---------------------------------------------------------
 # SAVE EVALUATION (WITH GRAND TOTAL UPDATE)
 # ---------------------------------------------------------
