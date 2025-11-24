@@ -337,6 +337,9 @@ st.dataframe(progress_df, use_container_width=True)
 # ---------------------------------------------------------
 # SAVE EVALUATION (WITH PROPER GRAND TOTAL)
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# SAVE EVALUATION (WITH IMMEDIATE STATUS UPDATE)
+# ---------------------------------------------------------
 if st.button("💾 Save Evaluation & Update Grand Total"):
     try:
         # Save current test evaluation
@@ -347,7 +350,7 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
             "manual_total": manual_total,
             "final_total": final_score,
             "evaluated_at": firestore.SERVER_TIMESTAMP,
-            "grand_total": real_time_grand_total  # Save the calculated grand total
+            "grand_total": real_time_grand_total
         }
         
         db.collection("student_responses").document(doc_id).update({
@@ -364,12 +367,12 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
         st.success(f"✅ Evaluation saved! Grand Total: {real_time_grand_total}")
         st.balloons()
         
-        # Force complete refresh
+        # FORCE COMPLETE REFRESH - Clear all caches and reload
+        st.cache_data.clear()
         st.rerun()
         
     except Exception as e:
         st.error(f"❌ Save failed: {e}")
-
 # ---------------------------------------------------------
 # EXPORT TO CSV
 # ---------------------------------------------------------
