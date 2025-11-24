@@ -376,39 +376,87 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
 # ---------------------------------------------------------
 # EXPORT TO CSV
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# EXPORT TO CSV (WITH NA INSTEAD OF 0)
+# ---------------------------------------------------------
 st.header("📥 Export Results")
 
 if st.button("📊 Download Complete Evaluation Report"):
     results_data = []
+    
     for item in student_data:
         test_eval = item.get("evaluation", {})
+        test_name = item["section"]
+        
         # Use current test score if it's the one being edited
         if item["doc_id"] == doc_id:
             test_score = final_score
+            auto_mcq_val = auto_mcq
+            auto_likert_val = auto_likert
+            manual_total_val = manual_total
         else:
             test_score = test_eval.get("final_total", 0)
-            
+            auto_mcq_val = test_eval.get("auto_mcq", 0)
+            auto_likert_val = test_eval.get("auto_likert", 0)
+            manual_total_val = test_eval.get("manual_total", 0)
+        
+        # Determine which test types are applicable
+        df_test_for_export = banks[test_name]
+        
+        # Check if test has MCQ questions
+        has_mcq = len(df_test_for_export[df_test_for_export["Type"] == "mcq"]) > 0
+        # Check if test has Likert questions  
+        has_likert = len(df_test_for_export[df_test_for_export["Type"] == "likert"]) > 0
+        # Check if test has manual questions
+        has_manual = len(df_test_for_export[df_test_for_export["Type"].isin(["short", "descriptive"])]) > 0
+        
+        # Replace 0 with NA if the test type doesn't exist
+        auto_mcq_display = auto_mcq_val if has_mcq else "NA"
+        auto_likert_display = auto_likert_val if has_likert else "NA" 
+        manual_total_display = manual_total_val if has_manual else "NA"
+        
         results_data.append({
             "Roll_Number": selected_roll,
-            "Test": item["section"],
-            "Auto_MCQ_Score": test_eval.get("auto_mcq", 0),
-            "Auto_Likert_Score": test_eval.get("auto_likert", 0),
-            "Manual_Total": test_eval.get("manual_total", 0),
+            "Test": test_name,
+            "Auto_MCQ_Score": auto_mcq_display,
+            "Auto_Likert_Score": auto_likert_display,
+            "Manual_Total": manual_total_display,
             "Test_Score": test_score
         })
     
     results_df = pd.DataFrame(results_data)
+    
+    # Add grand total row
     grand_total_row = pd.DataFrame([{
-        "Roll_Number": selected_roll, "Test": "GRAND TOTAL", "Auto_MCQ_Score": "",
-        "Auto_Likert_Score": "", "Manual_Total": "", "Test_Score": real_time_grand_total
+        "Roll_Number": selected_roll, 
+        "Test": "GRAND TOTAL", 
+        "Auto_MCQ_Score": "",
+        "Auto_Likert_Score": "", 
+        "Manual_Total": "", 
+        "Test_Score": real_time_grand_total
     }])
+    
     final_df = pd.concat([results_df, grand_total_row], ignore_index=True)
     
+    # Convert to CSV
     csv = final_df.to_csv(index=False)
+    
+    # Download button
     st.download_button(
-        label="⬇️ Download Complete Report",
+        label="⬇️ Download Complete Report (CSV)",
         data=csv,
         file_name=f"complete_evaluation_{selected_roll}.csv",
         mime="text/csv"
     )
+    
+    # Show preview
+    st.subheader("📋 Report Preview (with NA for non-applicable tests)")
     st.dataframe(final_df)
+    
+    # Also show explanation
+    st.info("""
+    **📝 Legend:**
+    - **NA**: This test type is not applicable for the assessment
+    - **0**: The student scored 0 in this test type
+    - **Number**: The actual score achieved by the student
+    """)
