@@ -42,33 +42,45 @@ db = firestore.client()
 # LOAD AND PROCESS DATA
 # ---------------------------------------------------------
 @st.cache_data
-@st.cache_data
 def load_all_evaluations():
-    """Load all student evaluations from Firestore"""
+    """Load all student evaluations from Firestore - include partially evaluated students"""
     try:
         docs = db.collection("student_responses").stream()
         
         students_data = []
+        
         for doc in docs:
             data = doc.to_dict()
+            roll_number = data.get('Roll', '').strip()
+            section = data.get('Section', '').strip()
+            
+            if not roll_number or roll_number == 'Unknown':
+                continue
+                
             evaluation = data.get("Evaluation", {})
             
-            # Include ALL students, even if not fully evaluated
-            # But only include documents that have some evaluation data
-            if evaluation:  # This checks if evaluation exists, not if it's complete
-                student_info = {
-                    'roll_number': data.get('Roll', 'Unknown'),
-                    'section': data.get('Section', 'Unknown'),
-                    'auto_mcq': evaluation.get('auto_mcq', 0),
-                    'auto_likert': evaluation.get('auto_likert', 0),
-                    'manual_total': evaluation.get('manual_total', 0),
-                    'final_total': evaluation.get('final_total', 0),
-                    'grand_total': evaluation.get('grand_total', 0),
-                    'doc_id': doc.id
-                }
-                students_data.append(student_info)
+            # Include ALL documents, but mark evaluation status
+            student_info = {
+                'roll_number': roll_number,
+                'section': section,
+                'auto_mcq': evaluation.get('auto_mcq', 0),
+                'auto_likert': evaluation.get('auto_likert', 0),
+                'manual_total': evaluation.get('manual_total', 0),
+                'final_total': evaluation.get('final_total', 0),
+                'grand_total': evaluation.get('grand_total', 0),
+                'doc_id': doc.id,
+                'is_fully_evaluated': bool(evaluation)  # Track evaluation status
+            }
+            students_data.append(student_info)
+        
+        # Debug info
+        if students_data:
+            unique_students = len(set([s['roll_number'] for s in students_data]))
+            evaluated_docs = len([s for s in students_data if s['is_fully_evaluated']])
+            st.sidebar.info(f"📊 Loaded {len(students_data)} test records from {unique_students} students ({evaluated_docs} evaluated)")
         
         return pd.DataFrame(students_data)
+        
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return pd.DataFrame()
