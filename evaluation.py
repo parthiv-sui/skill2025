@@ -347,11 +347,6 @@ with col4:
 with col5:
     st.metric("Real-Time Grand Total", real_time_grand_total)
 
-# Then show the progress table
-st.subheader("📋 Test Status")
-progress_df = pd.DataFrame(progress_data)
-st.dataframe(progress_df, use_container_width=True)
-
 # Show progress
 st.subheader("📋 Test Status")
 progress_df = pd.DataFrame(progress_data)
