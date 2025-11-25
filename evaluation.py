@@ -336,7 +336,10 @@ with col5:
 # Show progress with enhanced status indicators
 st.subheader("📋 Evaluation Status Overview")
 
-# Display all tests
+# Display all tests - DEBUG INFO
+st.write(f"**Debug:** Found {len(progress_data)} tests for student {selected_roll}")
+
+# Create a more visual status table
 for test_data in progress_data:
     test_name = test_data["Test"]
     status = test_data["Status"]
@@ -354,6 +357,8 @@ for test_data in progress_data:
             st.warning("✏️ Editing")
         elif status == "⏳ Pending":
             st.error("⏳ Pending")
+        else:
+            st.write(status)
     
     with col3:
         st.write(f"**{score}**")
@@ -397,8 +402,8 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
         st.success(f"✅ Evaluation saved for {selected_test}!")
         st.balloons()
         
-        # Force complete reload by using experimental_rerun
-        st.experimental_rerun()
+        # Force complete reload using st.rerun()
+        st.rerun()
         
     except Exception as e:
         st.error(f"❌ Save failed: {e}")
