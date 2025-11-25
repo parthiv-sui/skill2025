@@ -260,7 +260,7 @@ def evaluate_manual_questions(df_test, responses, existing_manual_marks=None):
 # CALCULATE REAL-TIME TOTALS
 # ---------------------------------------------------------
 def calculate_real_time_totals(student_data, current_test_id, current_test_score):
-    """Calculate REAL-TIME totals including current edits"""
+    """Calculate REAL-TIME totals with fresh scores for ALL tests"""
     grand_total = 0
     all_tests_data = []
     
@@ -270,9 +270,22 @@ def calculate_real_time_totals(student_data, current_test_id, current_test_score
             test_score = current_test_score
             status = "🔄 Editing"
         else:
-            # Use saved score
-            test_eval = item.get("evaluation", {})
-            test_score = test_eval.get("final_total", 0)
+            # Calculate FRESH score for non-editing tests (don't rely on saved data)
+            test_responses = item["responses"]
+            test_name = item["section"]
+            test_df = banks[test_name]
+            
+            # Calculate fresh auto scores
+            auto_mcq, auto_likert = calculate_auto_scores(test_df, test_responses)
+            
+            # For manual questions, we can't calculate without user input
+            # So use saved manual marks if they exist, otherwise 0
+            existing_eval = item.get("evaluation", {})
+            existing_manual_marks = existing_eval.get("manual_marks", {})
+            manual_total = existing_eval.get("manual_total", 0)
+            
+            # If we have saved manual marks, trust them. Otherwise manual is 0.
+            test_score = auto_mcq + auto_likert + manual_total
             status = "✅ Saved"
         
         grand_total += test_score
