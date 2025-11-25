@@ -271,17 +271,26 @@ def calculate_real_time_totals(student_data, current_test_id, current_test_score
         has_evaluation = bool(test_eval) and test_eval.get("final_total") is not None
         
         if item["doc_id"] == current_test_id:
-            # Current test being edited
-            test_score = current_test_score
-            status = "✏️ Editing"
-        else:
-            # Other tests
-            test_score = test_eval.get("final_total", 0)
-            if has_evaluation:
+            saved_final = test_eval.get("final_total", None)
+        
+            # If current calculated = saved -> it is saved
+            if saved_final == current_test_score:
                 status = "✅ Saved"
             else:
-                status = "⏳ Pending"
+                status = "✏️ Editing"
         
+            test_score = current_test_score
+        
+        else:
+            saved_final = test_eval.get("final_total", None)
+        
+            if saved_final is None:
+                status = "⏳ Pending"
+                test_score = 0
+            else:
+                status = "✅ Saved"
+                test_score = saved_final
+
         grand_total += test_score
         all_tests_data.append({
             "Test": item["section"],
