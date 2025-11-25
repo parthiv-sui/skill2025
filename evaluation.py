@@ -264,22 +264,20 @@ def calculate_real_time_totals(student_data, current_test_id, current_test_score
     all_tests_data = []
     
     for item in student_data:
+        test_eval = item.get("evaluation", {})
+        has_evaluation = bool(test_eval) and test_eval.get("final_total") is not None
+        
         if item["doc_id"] == current_test_id:
-            # Use the current edited score (not saved yet)
+            # Current test being edited - use real-time score
             test_score = current_test_score
-            # Check if this test has existing evaluation data
-            existing_eval = item.get("evaluation", {})
-            if existing_eval and existing_eval.get("final_total") is not None:
-                status = "✏️ Editing"  # Already saved, now editing
+            if has_evaluation:
+                status = "✏️ Editing"  # Has saved data, now editing
             else:
                 status = "🆕 New Evaluation"  # First time evaluation
         else:
-            # Use saved score
-            test_eval = item.get("evaluation", {})
+            # Other tests - use saved score
             test_score = test_eval.get("final_total", 0)
-            
-            # Determine status based on evaluation data
-            if test_eval and test_eval.get("final_total") is not None:
+            if has_evaluation:
                 status = "✅ Saved"
             else:
                 status = "⏳ Pending"
@@ -403,10 +401,9 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
         }
         
         # DEBUG: Show what we're saving
-        st.write(f"💾 Saving to Firebase:")
-        st.write(f"  - Test: {selected_test}")
-        st.write(f"  - Final Score: {final_score}")
-        st.write(f"  - Grand Total: {real_time_grand_total}")
+        st.success(f"✅ Evaluation saved for {selected_test}!")
+        st.write(f"🔍 Debug: Saved final_total = {final_score}")
+        st.write(f"🔍 Debug: Saved to document: {doc_id}")
         
         # Save to Firebase
         db.collection("student_responses").document(doc_id).update({
@@ -424,6 +421,7 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
             })
         
         # Force refresh
+        st.cache_data.clear()
         st.rerun()
         
     except Exception as e:
