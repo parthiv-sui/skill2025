@@ -401,36 +401,40 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
 # ---------------------------------------------------------
 # EXPORT TO CSV (WITH NA INSTEAD OF 0)
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# EXPORT TO CSV (WITH NA INSTEAD OF 0)
+# ---------------------------------------------------------
 st.header("📥 Export Results")
 
 if st.button("📊 Download Complete Evaluation Report"):
     results_data = []
     
     for item in student_data:
-        test_eval = item.get("evaluation", {})
         test_name = item["section"]
+        test_responses = item["responses"]
+        test_df = banks[test_name]
         
-        # Use current test score if it's the one being edited
+        # ALWAYS calculate fresh scores for export (don't rely on saved data)
+        auto_mcq_val, auto_likert_val = calculate_auto_scores(test_df, test_responses)
+        
         if item["doc_id"] == doc_id:
+            # For current test, use the scores from the UI
             test_score = final_score
-            auto_mcq_val = auto_mcq
-            auto_likert_val = auto_likert
             manual_total_val = manual_total
         else:
-            test_score = test_eval.get("final_total", 0)
-            auto_mcq_val = test_eval.get("auto_mcq", 0)
-            auto_likert_val = test_eval.get("auto_likert", 0)
-            manual_total_val = test_eval.get("manual_total", 0)
+            # For other tests, use saved manual scores or calculate fresh
+            existing_eval = item.get("evaluation", {})
+            manual_total_val = existing_eval.get("manual_total", 0)
+            # Calculate total score using fresh auto scores + saved manual
+            test_score = auto_mcq_val + auto_likert_val + manual_total_val
         
         # Determine which test types are applicable
-        df_test_for_export = banks[test_name]
-        
         # Check if test has MCQ questions
-        has_mcq = len(df_test_for_export[df_test_for_export["Type"] == "mcq"]) > 0
+        has_mcq = len(test_df[test_df["Type"] == "mcq"]) > 0
         # Check if test has Likert questions  
-        has_likert = len(df_test_for_export[df_test_for_export["Type"] == "likert"]) > 0
+        has_likert = len(test_df[test_df["Type"] == "likert"]) > 0
         # Check if test has manual questions
-        has_manual = len(df_test_for_export[df_test_for_export["Type"].isin(["short", "descriptive"])]) > 0
+        has_manual = len(test_df[test_df["Type"].isin(["short", "descriptive"])]) > 0
         
         # Replace 0 with NA if the test type doesn't exist
         auto_mcq_display = auto_mcq_val if has_mcq else "NA"
@@ -448,6 +452,9 @@ if st.button("📊 Download Complete Evaluation Report"):
     
     results_df = pd.DataFrame(results_data)
     
+    # Calculate fresh grand total for export (don't rely on real_time_grand_total)
+    export_grand_total = sum(item["Test_Score"] for item in results_data)
+    
     # Add grand total row
     grand_total_row = pd.DataFrame([{
         "Roll_Number": selected_roll, 
@@ -455,10 +462,11 @@ if st.button("📊 Download Complete Evaluation Report"):
         "Auto_MCQ_Score": "",
         "Auto_Likert_Score": "", 
         "Manual_Total": "", 
-        "Test_Score": real_time_grand_total
+        "Test_Score": export_grand_total
     }])
     
-    final_df = pd.concat([results_df, grand_total_row], ignore_index=True)
+    final_df = pd.DataFrame(results_data)
+    final_df = pd.concat([final_df, grand_total_row], ignore_index=True)
     
     # Convert to CSV
     csv = final_df.to_csv(index=False)
