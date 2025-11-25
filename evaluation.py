@@ -347,21 +347,6 @@ with col4:
 with col5:
     st.metric("Real-Time Grand Total", real_time_grand_total)
 
-# DEBUG: Check what's in the Firebase data for each test
-st.subheader("🔍 DEBUG: Firebase Data Analysis")
-for item in student_data:
-    test_name = item["section"]
-    test_eval = item.get("evaluation", {})
-    saved_final_total = test_eval.get("final_total", "NOT SAVED")
-    saved_auto_mcq = test_eval.get("auto_mcq", "NOT SAVED")
-    saved_auto_likert = test_eval.get("auto_likert", "NOT SAVED")
-    
-    st.write(f"**{test_name}**:")
-    st.write(f"  - final_total: {saved_final_total}")
-    st.write(f"  - auto_mcq: {saved_auto_mcq}")
-    st.write(f"  - auto_likert: {saved_auto_likert}")
-    st.write("---")
-
 # Then show the progress table
 st.subheader("📋 Test Status")
 progress_df = pd.DataFrame(progress_data)
