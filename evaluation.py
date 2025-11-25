@@ -288,25 +288,24 @@ def calculate_real_time_totals(student_data, current_test_id, current_test_score
 # ---------------------------------------------------------
 st.header(f"📊 Evaluating: {selected_test}")
 
-# FIXED: Get existing evaluation data - check if scores exist (not just if > 0)
+# FIXED: Get existing evaluation data
 existing_auto_mcq = existing_evaluation.get("auto_mcq", None)
 existing_auto_likert = existing_evaluation.get("auto_likert", None)
 existing_manual_marks = existing_evaluation.get("manual_marks", {})
 existing_manual_total = existing_evaluation.get("manual_total", 0)
 existing_final_total = existing_evaluation.get("final_total", 0)
 
-# FIXED: Calculate scores - USE SAVED SCORES IF THEY EXIST
+# FIXED: ALWAYS RECALCULATE AUTO SCORES (This fixes the zero score issue)
+auto_mcq, auto_likert = calculate_auto_scores(df_test, responses)
+
+# Only show fresh calculation message if different from saved
 if existing_auto_mcq is not None and existing_auto_likert is not None:
-    # Use existing saved scores (even if they are 0)
-    auto_mcq = existing_auto_mcq
-    auto_likert = existing_auto_likert
-    st.info(f"📁 Using saved auto-scores: MCQ={auto_mcq}, Likert={auto_likert}")
+    if auto_mcq != existing_auto_mcq or auto_likert != existing_auto_likert:
+        st.success(f"🔄 Fresh auto-scores calculated: MCQ={auto_mcq}, Likert={auto_likert}")
 else:
-    # Calculate fresh scores only if no saved data exists
-    auto_mcq, auto_likert = calculate_auto_scores(df_test, responses)
     st.success(f"🔄 Fresh auto-scores calculated: MCQ={auto_mcq}, Likert={auto_likert}")
 
-# Manual evaluation (always show interface, but use existing marks as defaults)
+# Manual evaluation (always use existing marks as defaults for consistency)
 manual_total, manual_marks = evaluate_manual_questions(df_test, responses, existing_manual_marks)
 
 # Current test final score
@@ -340,9 +339,12 @@ st.dataframe(progress_df, use_container_width=True)
 
 # Debug information to verify score sources
 with st.expander("🔍 Debug: Score Sources"):
+    st.write(f"Selected Test: {selected_test}")
     st.write(f"Existing Auto MCQ: {existing_auto_mcq}")
     st.write(f"Existing Auto Likert: {existing_auto_likert}")
-    st.write(f"Using saved scores: {existing_auto_mcq is not None}")
+    st.write(f"Fresh Calculated MCQ: {auto_mcq}")
+    st.write(f"Fresh Calculated Likert: {auto_likert}")
+    st.write(f"Using fresh calculation: Always")
 
 # ---------------------------------------------------------
 # SAVE EVALUATION (WITH IMMEDIATE STATUS UPDATE)
