@@ -255,12 +255,11 @@ def evaluate_manual_questions(df_test, responses, existing_manual_marks=None):
     
     return manual_total, manual_marks
 
-
 # ---------------------------------------------------------
-# CALCULATE REAL-TIME TOTALS
+# CALCULATE REAL-TIME TOTALS WITH ENHANCED STATUS
 # ---------------------------------------------------------
 def calculate_real_time_totals(student_data, current_test_id, current_test_score):
-    """Calculate REAL-TIME totals with fresh scores for ALL tests"""
+    """Calculate REAL-TIME totals including current edits"""
     grand_total = 0
     all_tests_data = []
     
@@ -268,25 +267,22 @@ def calculate_real_time_totals(student_data, current_test_id, current_test_score
         if item["doc_id"] == current_test_id:
             # Use the current edited score (not saved yet)
             test_score = current_test_score
-            status = "🔄 Editing"
-        else:
-            # Calculate FRESH score for non-editing tests (don't rely on saved data)
-            test_responses = item["responses"]
-            test_name = item["section"]
-            test_df = banks[test_name]
-            
-            # Calculate fresh auto scores
-            auto_mcq, auto_likert = calculate_auto_scores(test_df, test_responses)
-            
-            # For manual questions, we can't calculate without user input
-            # So use saved manual marks if they exist, otherwise 0
+            # Check if this test has existing evaluation data
             existing_eval = item.get("evaluation", {})
-            existing_manual_marks = existing_eval.get("manual_marks", {})
-            manual_total = existing_eval.get("manual_total", 0)
+            if existing_eval and existing_eval.get("final_total") is not None:
+                status = "✏️ Editing"  # Already saved, now editing
+            else:
+                status = "🆕 New Evaluation"  # First time evaluation
+        else:
+            # Use saved score
+            test_eval = item.get("evaluation", {})
+            test_score = test_eval.get("final_total", 0)
             
-            # If we have saved manual marks, trust them. Otherwise manual is 0.
-            test_score = auto_mcq + auto_likert + manual_total
-            status = "✅ Saved"
+            # Determine status based on evaluation data
+            if test_eval and test_eval.get("final_total") is not None:
+                status = "✅ Saved"
+            else:
+                status = "⏳ Pending"
         
         grand_total += test_score
         all_tests_data.append({
@@ -309,7 +305,7 @@ existing_manual_marks = existing_evaluation.get("manual_marks", {})
 existing_manual_total = existing_evaluation.get("manual_total", 0)
 existing_final_total = existing_evaluation.get("final_total", 0)
 
-# FIXED: ALWAYS RECALCULATE AUTO SCORES (This fixes the zero score issue)
+# FIXED: ALWAYS RECALCULATE AUTO SCORES
 auto_mcq, auto_likert = calculate_auto_scores(df_test, responses)
 
 # Only show fresh calculation message if different from saved
@@ -325,12 +321,11 @@ manual_total, manual_marks = evaluate_manual_questions(df_test, responses, exist
 # Current test final score
 final_score = auto_mcq + auto_likert + manual_total
 
-
 # Calculate REAL-TIME totals (including current edits)
 real_time_grand_total, progress_data = calculate_real_time_totals(student_data, doc_id, final_score)
 
 # ---------------------------------------------------------
-# DISPLAY REAL-TIME TOTALS
+# DISPLAY REAL-TIME TOTALS WITH ENHANCED STATUS
 # ---------------------------------------------------------
 st.header("🎯 Real-Time Evaluation Progress")
 
@@ -347,19 +342,49 @@ with col4:
 with col5:
     st.metric("Real-Time Grand Total", real_time_grand_total)
 
-# Show progress
-st.subheader("📋 Test Status")
-progress_df = pd.DataFrame(progress_data)
-st.dataframe(progress_df, use_container_width=True)
+# Show progress with enhanced status indicators
+st.subheader("📋 Evaluation Status Overview")
 
-# Debug information to verify score sources
-with st.expander("🔍 Debug: Score Sources"):
-    st.write(f"Selected Test: {selected_test}")
-    st.write(f"Existing Auto MCQ: {existing_auto_mcq}")
-    st.write(f"Existing Auto Likert: {existing_auto_likert}")
-    st.write(f"Fresh Calculated MCQ: {auto_mcq}")
-    st.write(f"Fresh Calculated Likert: {auto_likert}")
-    st.write(f"Using fresh calculation: Always")
+# Create a more visual status table
+for test_data in progress_data:
+    test_name = test_data["Test"]
+    status = test_data["Status"]
+    score = test_data["Score"]
+    
+    col1, col2, col3 = st.columns([3, 2, 1])
+    
+    with col1:
+        st.write(f"**{test_name}**")
+    
+    with col2:
+        # Color-coded status badges
+        if status == "✅ Saved":
+            st.success("✅ Saved")
+        elif status == "✏️ Editing":
+            st.warning("✏️ Editing")
+        elif status == "🆕 New Evaluation":
+            st.info("🆕 New")
+        elif status == "⏳ Pending":
+            st.error("⏳ Pending")
+        else:
+            st.write(status)
+    
+    with col3:
+        st.write(f"**{score}**")
+
+# Status Legend
+with st.expander("📖 Status Legend"):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.success("✅ Saved - Evaluation completed and saved")
+        st.warning("✏️ Editing - Currently being evaluated")
+    
+    with col2:
+        st.info("🆕 New - First time evaluation in progress")
+        st.error("⏳ Pending - Not yet evaluated")
+
+st.write("---")
 
 # ---------------------------------------------------------
 # SAVE EVALUATION (WITH IMMEDIATE STATUS UPDATE)
@@ -377,9 +402,19 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
             "grand_total": real_time_grand_total
         }
         
+        # DEBUG: Show what we're saving
+        st.write(f"💾 Saving to Firebase:")
+        st.write(f"  - Test: {selected_test}")
+        st.write(f"  - Final Score: {final_score}")
+        st.write(f"  - Grand Total: {real_time_grand_total}")
+        
+        # Save to Firebase
         db.collection("student_responses").document(doc_id).update({
             "Evaluation": evaluation_data
         })
+        
+        st.success(f"✅ Evaluation saved for {selected_test}! Status changed to 'Saved'")
+        st.balloons()
         
         # Update grand total in ALL documents for consistency
         all_docs = db.collection("student_responses").where("Roll", "==", selected_roll).stream()
@@ -388,19 +423,12 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
                 "Evaluation.grand_total": real_time_grand_total
             })
         
-        st.success(f"✅ Evaluation saved! Grand Total: {real_time_grand_total}")
-        st.balloons()
-        
-        # FORCE COMPLETE REFRESH - Clear all caches and reload
-        st.cache_data.clear()
+        # Force refresh
         st.rerun()
         
     except Exception as e:
         st.error(f"❌ Save failed: {e}")
 
-# ---------------------------------------------------------
-# EXPORT TO CSV (WITH NA INSTEAD OF 0)
-# ---------------------------------------------------------
 # ---------------------------------------------------------
 # EXPORT TO CSV (WITH NA INSTEAD OF 0)
 # ---------------------------------------------------------
