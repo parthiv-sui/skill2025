@@ -76,8 +76,8 @@ def get_scale_options(qid):
 # ---------------------------------------------------------
 # LOAD FRESH DATA FUNCTION
 # ---------------------------------------------------------
-def load_fresh_data():
-    """Load fresh data from Firebase - called multiple times"""
+def load_all_student_data():
+    """Load all student data from Firebase"""
     roll_map = {}
     try:
         docs = db.collection("student_responses").stream()
@@ -106,7 +106,7 @@ def load_fresh_data():
 # ---------------------------------------------------------
 # INITIAL DATA LOAD
 # ---------------------------------------------------------
-roll_map = load_fresh_data()
+roll_map = load_all_student_data()
 
 if not roll_map:
     st.error("No student responses found.")
@@ -259,7 +259,7 @@ def evaluate_manual_questions(df_test, responses, existing_manual_marks=None):
     return manual_total, manual_marks
 
 # ---------------------------------------------------------
-# CALCULATE REAL-TIME TOTALS WITH ENHANCED STATUS
+# CALCULATE REAL-TIME TOTALS WITH SIMPLIFIED STATUS
 # ---------------------------------------------------------
 def calculate_real_time_totals(student_data, current_test_id, current_test_score):
     """Calculate REAL-TIME totals including current edits"""
@@ -271,14 +271,11 @@ def calculate_real_time_totals(student_data, current_test_id, current_test_score
         has_evaluation = bool(test_eval) and test_eval.get("final_total") is not None
         
         if item["doc_id"] == current_test_id:
-            # Current test being edited - use real-time score
+            # Current test being edited
             test_score = current_test_score
-            if has_evaluation:
-                status = "✏️ Editing"  # Has saved data, now editing
-            else:
-                status = "🆕 New Evaluation"  # First time evaluation
+            status = "✏️ Editing"
         else:
-            # Other tests - use saved score
+            # Other tests
             test_score = test_eval.get("final_total", 0)
             if has_evaluation:
                 status = "✅ Saved"
@@ -299,34 +296,27 @@ def calculate_real_time_totals(student_data, current_test_id, current_test_score
 # ---------------------------------------------------------
 st.header(f"📊 Evaluating: {selected_test}")
 
-# FIXED: Get existing evaluation data
+# Get existing evaluation data
 existing_auto_mcq = existing_evaluation.get("auto_mcq", None)
 existing_auto_likert = existing_evaluation.get("auto_likert", None)
 existing_manual_marks = existing_evaluation.get("manual_marks", {})
 existing_manual_total = existing_evaluation.get("manual_total", 0)
 existing_final_total = existing_evaluation.get("final_total", 0)
 
-# FIXED: ALWAYS RECALCULATE AUTO SCORES
+# ALWAYS RECALCULATE AUTO SCORES
 auto_mcq, auto_likert = calculate_auto_scores(df_test, responses)
 
-# Only show fresh calculation message if different from saved
-if existing_auto_mcq is not None and existing_auto_likert is not None:
-    if auto_mcq != existing_auto_mcq or auto_likert != existing_auto_likert:
-        st.success(f"🔄 Fresh auto-scores calculated: MCQ={auto_mcq}, Likert={auto_likert}")
-else:
-    st.success(f"🔄 Fresh auto-scores calculated: MCQ={auto_mcq}, Likert={auto_likert}")
-
-# Manual evaluation (always use existing marks as defaults for consistency)
+# Manual evaluation
 manual_total, manual_marks = evaluate_manual_questions(df_test, responses, existing_manual_marks)
 
 # Current test final score
 final_score = auto_mcq + auto_likert + manual_total
 
-# Calculate REAL-TIME totals (including current edits)
+# Calculate REAL-TIME totals
 real_time_grand_total, progress_data = calculate_real_time_totals(student_data, doc_id, final_score)
 
 # ---------------------------------------------------------
-# DISPLAY REAL-TIME TOTALS WITH ENHANCED STATUS
+# DISPLAY REAL-TIME TOTALS
 # ---------------------------------------------------------
 st.header("🎯 Real-Time Evaluation Progress")
 
@@ -346,7 +336,7 @@ with col5:
 # Show progress with enhanced status indicators
 st.subheader("📋 Evaluation Status Overview")
 
-# Create a more visual status table
+# Display all tests
 for test_data in progress_data:
     test_name = test_data["Test"]
     status = test_data["Status"]
@@ -358,37 +348,26 @@ for test_data in progress_data:
         st.write(f"**{test_name}**")
     
     with col2:
-        # Color-coded status badges
         if status == "✅ Saved":
             st.success("✅ Saved")
         elif status == "✏️ Editing":
             st.warning("✏️ Editing")
-        elif status == "🆕 New Evaluation":
-            st.info("🆕 New")
         elif status == "⏳ Pending":
             st.error("⏳ Pending")
-        else:
-            st.write(status)
     
     with col3:
         st.write(f"**{score}**")
 
 # Status Legend
 with st.expander("📖 Status Legend"):
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.success("✅ Saved - Evaluation completed and saved")
-        st.warning("✏️ Editing - Currently being evaluated")
-    
-    with col2:
-        st.info("🆕 New - First time evaluation in progress")
-        st.error("⏳ Pending - Not yet evaluated")
+    st.success("✅ Saved - Evaluation completed and saved")
+    st.warning("✏️ Editing - Currently being evaluated") 
+    st.error("⏳ Pending - Not yet evaluated")
 
 st.write("---")
 
 # ---------------------------------------------------------
-# SAVE EVALUATION (WITH IMMEDIATE STATUS UPDATE)
+# SAVE EVALUATION - FIXED VERSION
 # ---------------------------------------------------------
 if st.button("💾 Save Evaluation & Update Grand Total"):
     try:
@@ -415,17 +394,17 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
                 "Evaluation.grand_total": real_time_grand_total
             })
         
-        st.success(f"✅ Evaluation saved for {selected_test}! Status changed to 'Saved'")
+        st.success(f"✅ Evaluation saved for {selected_test}!")
         st.balloons()
         
-        # FORCE COMPLETE RELOAD - This is the key fix!
-        st.rerun()
+        # Force complete reload by using experimental_rerun
+        st.experimental_rerun()
         
     except Exception as e:
         st.error(f"❌ Save failed: {e}")
 
 # ---------------------------------------------------------
-# EXPORT TO CSV (WITH NA INSTEAD OF 0)
+# EXPORT TO CSV
 # ---------------------------------------------------------
 st.header("📥 Export Results")
 
@@ -437,29 +416,23 @@ if st.button("📊 Download Complete Evaluation Report"):
         test_responses = item["responses"]
         test_df = banks[test_name]
         
-        # ALWAYS calculate fresh scores for export (don't rely on saved data)
+        # Calculate fresh scores
         auto_mcq_val, auto_likert_val = calculate_auto_scores(test_df, test_responses)
         
         if item["doc_id"] == doc_id:
-            # For current test, use the scores from the UI
             test_score = final_score
             manual_total_val = manual_total
         else:
-            # For other tests, use saved manual scores or calculate fresh
             existing_eval = item.get("evaluation", {})
             manual_total_val = existing_eval.get("manual_total", 0)
-            # Calculate total score using fresh auto scores + saved manual
             test_score = auto_mcq_val + auto_likert_val + manual_total_val
         
-        # Determine which test types are applicable
-        # Check if test has MCQ questions
+        # Determine test types
         has_mcq = len(test_df[test_df["Type"] == "mcq"]) > 0
-        # Check if test has Likert questions  
         has_likert = len(test_df[test_df["Type"] == "likert"]) > 0
-        # Check if test has manual questions
         has_manual = len(test_df[test_df["Type"].isin(["short", "descriptive"])]) > 0
         
-        # Replace 0 with NA if the test type doesn't exist
+        # Replace 0 with NA if not applicable
         auto_mcq_display = auto_mcq_val if has_mcq else "NA"
         auto_likert_display = auto_likert_val if has_likert else "NA" 
         manual_total_display = manual_total_val if has_manual else "NA"
@@ -474,8 +447,6 @@ if st.button("📊 Download Complete Evaluation Report"):
         })
     
     results_df = pd.DataFrame(results_data)
-    
-    # Calculate fresh grand total for export (don't rely on real_time_grand_total)
     export_grand_total = sum(item["Test_Score"] for item in results_data)
     
     # Add grand total row
@@ -488,13 +459,10 @@ if st.button("📊 Download Complete Evaluation Report"):
         "Test_Score": export_grand_total
     }])
     
-    final_df = pd.DataFrame(results_data)
-    final_df = pd.concat([final_df, grand_total_row], ignore_index=True)
+    final_df = pd.concat([results_df, grand_total_row], ignore_index=True)
     
-    # Convert to CSV
+    # Download
     csv = final_df.to_csv(index=False)
-    
-    # Download button
     st.download_button(
         label="⬇️ Download Complete Report (CSV)",
         data=csv,
@@ -502,14 +470,6 @@ if st.button("📊 Download Complete Evaluation Report"):
         mime="text/csv"
     )
     
-    # Show preview
-    st.subheader("📋 Report Preview (with NA for non-applicable tests)")
+    # Preview
+    st.subheader("📋 Report Preview")
     st.dataframe(final_df)
-    
-    # Also show explanation
-    st.info("""
-    **📝 Legend:**
-    - **NA**: This test type is not applicable for the assessment
-    - **0**: The student scored 0 in this test type
-    - **Number**: The actual score achieved by the student
-    """)
