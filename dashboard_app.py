@@ -522,24 +522,28 @@ if not filtered_df.empty:
         avg_manual = filtered_df['manual_total'].mean()
         overall_avg = filtered_df['final_total'].mean()
         
-        # Overall performance gauge
+        # Overall performance gauge - CORRECTED
+        # Calculate dynamic range based on actual data
+        max_score = max(60, filtered_df['final_total'].max() * 1.2)  # Add 20% padding
+        min_score = 0
+        
         fig_gauge = go.Figure(go.Indicator(
-            mode = "gauge+number+delta",
+            mode = "gauge+number",
             value = overall_avg,
             domain = {'x': [0, 1], 'y': [0, 1]},
             title = {'text': "Overall Performance Score"},
             gauge = {
-                'axis': {'range': [None, 100]},
+                'axis': {'range': [min_score, max_score]},
                 'bar': {'color': "darkblue"},
                 'steps': [
-                    {'range': [0, 40], 'color': "lightcoral"},
-                    {'range': [40, 70], 'color': "lightyellow"},
-                    {'range': [70, 100], 'color': "lightgreen"}
+                    {'range': [min_score, max_score * 0.4], 'color': "lightcoral"},
+                    {'range': [max_score * 0.4, max_score * 0.7], 'color': "lightyellow"},
+                    {'range': [max_score * 0.7, max_score], 'color': "lightgreen"}
                 ],
                 'threshold': {
                     'line': {'color': "red", 'width': 4},
                     'thickness': 0.75,
-                    'value': 60
+                    'value': overall_avg  # Needle points to actual average
                 }
             }
         ))
