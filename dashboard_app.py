@@ -7,6 +7,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import numpy as np
 from datetime import datetime
+import json  # Add this import
 
 # ---------------------------------------------------------
 # PAGE CONFIG
@@ -88,14 +89,63 @@ def load_all_evaluations():
 # Load data
 df = load_all_evaluations()
 
+# ========== ADD DEBUG SECTION ==========
+st.sidebar.header("🔍 DEBUG: Data Verification")
+
+# Check specific student data
+target_student = "25BBAB152"  # Change this to your student's roll number
+if target_student in df['roll_number'].values:
+    st.sidebar.success(f"✅ Student {target_student} FOUND in data")
+    student_records = df[df['roll_number'] == target_student]
+    st.sidebar.write(f"Number of test records: {len(student_records)}")
+    
+    for _, record in student_records.iterrows():
+        st.sidebar.write(f"**{record['section']}**:")
+        st.sidebar.write(f"  - Final Total: {record['final_total']}")
+        st.sidebar.write(f"  - Auto MCQ: {record['auto_mcq']}")
+        st.sidebar.write(f"  - Auto Likert: {record['auto_likert']}")
+        st.sidebar.write(f"  - Manual Total: {record['manual_total']}")
+        st.sidebar.write(f"  - Grand Total: {record['grand_total']}")
+        st.sidebar.write(f"  - Evaluated: {record['is_fully_evaluated']}")
+        st.sidebar.write("  ---")
+else:
+    st.sidebar.error(f"❌ Student {target_student} NOT FOUND in loaded data")
+
+# Check what's actually in Firebase for this student
+st.sidebar.header("🔍 Firebase Direct Check")
+try:
+    student_docs = db.collection("student_responses").where("Roll", "==", target_student).stream()
+    doc_count = 0
+    for doc in student_docs:
+        doc_count += 1
+        data = doc.to_dict()
+        evaluation = data.get("Evaluation", {})
+        st.sidebar.write(f"📄 Firebase Document {doc_count}:")
+        st.sidebar.write(f"  - Section: {data.get('Section')}")
+        st.sidebar.write(f"  - Document ID: {doc.id}")
+        st.sidebar.write(f"  - Final Total: {evaluation.get('final_total', 'NOT SAVED')}")
+        st.sidebar.write(f"  - Auto Likert: {evaluation.get('auto_likert', 'NOT SAVED')}")
+        st.sidebar.write(f"  - Grand Total: {evaluation.get('grand_total', 'NOT SAVED')}")
+        st.sidebar.write("  ---")
+    
+    st.sidebar.write(f"Total Firebase docs for {target_student}: {doc_count}")
+except Exception as e:
+    st.sidebar.error(f"Error checking Firebase: {e}")
+
 if df.empty:
     st.warning("No evaluation data found. Please evaluate some students first.")
     st.stop()
+# ========== END DEBUG SECTION ==========
 
 # ---------------------------------------------------------
 # SIDEBAR FILTERS
 # ---------------------------------------------------------
 st.sidebar.header("🔍 Filters & Controls")
+
+# Add refresh button
+if st.sidebar.button("🔄 Clear Cache & Refresh Data"):
+    st.cache_data.clear()
+    st.rerun()
 
 # Roll number filter
 all_rolls = sorted(df['roll_number'].unique())
