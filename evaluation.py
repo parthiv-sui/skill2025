@@ -74,9 +74,10 @@ def get_scale_options(qid):
         return [0, 1]
 
 # ---------------------------------------------------------
-# LOAD FRESH DATA (NO CACHE)
+# LOAD FRESH DATA FUNCTION
 # ---------------------------------------------------------
 def load_fresh_data():
+    """Load fresh data from Firebase - called multiple times"""
     roll_map = {}
     try:
         docs = db.collection("student_responses").stream()
@@ -102,7 +103,9 @@ def load_fresh_data():
         st.error(f"Error loading responses: {e}")
         return {}
 
-# Load fresh data (no caching)
+# ---------------------------------------------------------
+# INITIAL DATA LOAD
+# ---------------------------------------------------------
 roll_map = load_fresh_data()
 
 if not roll_map:
@@ -400,18 +403,10 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
             "grand_total": real_time_grand_total
         }
         
-        # DEBUG: Show what we're saving
-        st.success(f"✅ Evaluation saved for {selected_test}!")
-        st.write(f"🔍 Debug: Saved final_total = {final_score}")
-        st.write(f"🔍 Debug: Saved to document: {doc_id}")
-        
         # Save to Firebase
         db.collection("student_responses").document(doc_id).update({
             "Evaluation": evaluation_data
         })
-        
-        st.success(f"✅ Evaluation saved for {selected_test}! Status changed to 'Saved'")
-        st.balloons()
         
         # Update grand total in ALL documents for consistency
         all_docs = db.collection("student_responses").where("Roll", "==", selected_roll).stream()
@@ -420,8 +415,10 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
                 "Evaluation.grand_total": real_time_grand_total
             })
         
-        # Force refresh
-        st.cache_data.clear()
+        st.success(f"✅ Evaluation saved for {selected_test}! Status changed to 'Saved'")
+        st.balloons()
+        
+        # FORCE COMPLETE RELOAD - This is the key fix!
         st.rerun()
         
     except Exception as e:
