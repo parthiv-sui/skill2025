@@ -461,39 +461,208 @@ with col2:
 st.header("💡 Insights & Recommendations")
 
 if not filtered_df.empty:
-    # Generate automatic insights
-    avg_mcq = filtered_df['auto_mcq'].mean()
-    avg_likert = filtered_df['auto_likert'].mean()
-    avg_manual = filtered_df['manual_total'].mean()
-    
-    col1, col2, col3 = st.columns(3)
+    # Test-specific analysis
+    col1, col2 = st.columns(2)
     
     with col1:
-        st.info(f"**MCQ Performance**: {avg_mcq:.1f} avg")
-        if avg_mcq < 15:
-            st.warning("Consider reinforcing conceptual understanding")
-        else:
-            st.success("Strong conceptual knowledge!")
+        st.subheader("📊 Test-Wise Performance Analysis")
+        
+        # Calculate averages for each test type
+        test_analysis = filtered_df.groupby('section').agg({
+            'final_total': 'mean',
+            'auto_mcq': 'mean',
+            'auto_likert': 'mean', 
+            'manual_total': 'mean'
+        }).round(1)
+        
+        # Display test-wise performance
+        for test_name in test_analysis.index:
+            test_data = test_analysis.loc[test_name]
+            avg_score = test_data['final_total']
+            
+            # Determine performance level
+            if avg_score >= 80:
+                performance_icon = "🎯"
+                performance_level = "Excellent"
+                color = "green"
+            elif avg_score >= 60:
+                performance_icon = "✅"
+                performance_level = "Good" 
+                color = "blue"
+            elif avg_score >= 40:
+                performance_icon = "⚠️"
+                performance_level = "Average"
+                color = "orange"
+            else:
+                performance_icon = "🚨"
+                performance_level = "Needs Improvement"
+                color = "red"
+            
+            st.markdown(f"**{performance_icon} {test_name}**")
+            st.markdown(f"Average Score: **{avg_score}** ({performance_level})")
+            
+            # Test-specific insights
+            if "Aptitude" in test_name:
+                mcq_avg = test_data['auto_mcq']
+                if mcq_avg < 15:
+                    st.warning("• Focus on logical reasoning and quantitative skills")
+                else:
+                    st.success("• Strong analytical thinking demonstrated")
+                    
+            elif "Adaptability" in test_name:
+                likert_avg = test_data['auto_likert']
+                if likert_avg < 20:
+                    st.warning("• Develop flexibility and change management skills")
+                else:
+                    st.success("• Excellent adaptability and learning agility")
+                    
+            elif "Communication Skills - Objective" in test_name:
+                mcq_avg = test_data['auto_mcq']
+                if mcq_avg < 10:
+                    st.warning("• Improve grammar and vocabulary fundamentals")
+                else:
+                    st.success("• Good command of language basics")
+                    
+            elif "Communication Skills - Descriptive" in test_name:
+                manual_avg = test_data['manual_total']
+                if manual_avg < 15:
+                    st.warning("• Practice structured writing and expression")
+                else:
+                    st.success("• Effective written communication skills")
+            
+            st.write("---")
     
     with col2:
-        st.info(f"**Likert Scale**: {avg_likert:.1f} avg")
+        st.subheader("🎯 Overall Performance Insights")
+        
+        # Overall metrics
+        avg_mcq = filtered_df['auto_mcq'].mean()
+        avg_likert = filtered_df['auto_likert'].mean()
+        avg_manual = filtered_df['manual_total'].mean()
+        overall_avg = filtered_df['final_total'].mean()
+        
+        # Overall performance gauge
+        fig_gauge = go.Figure(go.Indicator(
+            mode = "gauge+number+delta",
+            value = overall_avg,
+            domain = {'x': [0, 1], 'y': [0, 1]},
+            title = {'text': "Overall Performance Score"},
+            gauge = {
+                'axis': {'range': [None, 100]},
+                'bar': {'color': "darkblue"},
+                'steps': [
+                    {'range': [0, 40], 'color': "lightcoral"},
+                    {'range': [40, 70], 'color': "lightyellow"},
+                    {'range': [70, 100], 'color': "lightgreen"}
+                ],
+                'threshold': {
+                    'line': {'color': "red", 'width': 4},
+                    'thickness': 0.75,
+                    'value': 60
+                }
+            }
+        ))
+        fig_gauge.update_layout(height=300)
+        st.plotly_chart(fig_gauge, use_container_width=True)
+        
+        # Skill category analysis
+        st.subheader("🔧 Skill Category Breakdown")
+        
+        skill_data = {
+            'Category': ['Analytical Skills', 'Adaptability', 'Communication'],
+            'Average Score': [avg_mcq, avg_likert, avg_manual],
+            'Max Possible': [30, 40, 30]  # Adjust based on your max scores
+        }
+        skill_df = pd.DataFrame(skill_data)
+        skill_df['Percentage'] = (skill_df['Average Score'] / skill_df['Max Possible'] * 100).round(1)
+        
+        fig_skills = px.bar(
+            skill_df,
+            x='Category',
+            y='Percentage',
+            title="Skill Category Performance (%)",
+            color='Percentage',
+            color_continuous_scale='RdYlGn',
+            text='Percentage'
+        )
+        fig_skills.update_traces(texttemplate='%{text}%', textposition='outside')
+        st.plotly_chart(fig_skills, use_container_width=True)
+        
+        # Top recommendations
+        st.subheader("🎯 Top 3 Recommendations")
+        
+        recommendations = []
+        
+        if avg_mcq < 15:
+            recommendations.append("• **Strengthen conceptual understanding** through practice tests")
         if avg_likert < 20:
-            st.warning("Focus on adaptability skills development")
-        else:
-            st.success("Excellent adaptability traits!")
-    
-    with col3:
-        st.info(f"**Manual Evaluation**: {avg_manual:.1f} avg")
+            recommendations.append("• **Develop adaptability** through scenario-based learning")
         if avg_manual < 10:
-            st.warning("Practice descriptive answer writing")
-        else:
-            st.success("Good communication skills!")
+            recommendations.append("• **Enhance communication skills** with writing exercises")
+        if avg_mcq >= 20 and avg_likert >= 25:
+            recommendations.append("• **Excellent overall performance** - focus on advanced topics")
+        if len(recommendations) == 0:
+            recommendations.append("• **Good balanced performance** across all areas")
+        
+        for i, rec in enumerate(recommendations[:3], 1):
+            st.info(f"{rec}")
 
-# ---------------------------------------------------------
-# FOOTER
-# ---------------------------------------------------------
-st.markdown("---")
-st.markdown(
-    "📊 *Dashboard created with ❤️ using Streamlit and Plotly* • "
-    f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+# Additional detailed analysis
+st.header("📈 Detailed Performance Analytics")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    # Score distribution by test type
+    st.subheader("📋 Score Distribution by Test")
+    fig_box = px.box(
+        filtered_df,
+        x='section',
+        y='final_total',
+        title="Score Distribution Across Tests",
+        color='section'
+    )
+    st.plotly_chart(fig_box, use_container_width=True)
+
+with col2:
+    # Performance trends
+    st.subheader("📈 Performance Consistency")
+    
+    # Calculate coefficient of variation (consistency metric)
+    consistency_data = filtered_df.groupby('roll_number')['final_total'].std() / filtered_df.groupby('roll_number')['final_total'].mean()
+    avg_consistency = consistency_data.mean()
+    
+    if avg_consistency < 0.2:
+        consistency_msg = "**High Consistency** - Stable performance across tests"
+        consistency_icon = "✅"
+    elif avg_consistency < 0.4:
+        consistency_msg = "**Moderate Consistency** - Some variation in performance"
+        consistency_icon = "⚠️"
+    else:
+        consistency_msg = "**Variable Performance** - Significant differences between tests"
+        consistency_icon = "🔄"
+    
+    st.metric("Performance Consistency", f"{avg_consistency:.2f}", 
+              delta=consistency_msg, delta_color="off")
+    
+    st.info(f"{consistency_icon} {consistency_msg}")
+
+# Test completion analysis
+st.subheader("🎯 Test Completion & Evaluation Status")
+completion_stats = df.groupby('section')['is_fully_evaluated'].mean().round(3) * 100
+completion_df = pd.DataFrame({
+    'Test': completion_stats.index,
+    'Evaluation Completion %': completion_stats.values
+})
+
+fig_completion = px.bar(
+    completion_df,
+    x='Test',
+    y='Evaluation Completion %',
+    title="Test Evaluation Completion Status",
+    color='Evaluation Completion %',
+    color_continuous_scale='Blues',
+    text='Evaluation Completion %'
 )
+fig_completion.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+st.plotly_chart(fig_completion, use_container_width=True)
