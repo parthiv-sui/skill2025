@@ -412,25 +412,6 @@ fig_leaderboard.update_layout(showlegend=False)
 st.plotly_chart(fig_leaderboard, use_container_width=True)
 
 # ---------------------------------------------------------
-# PERFORMANCE QUARTILES
-# ---------------------------------------------------------
-st.header("📊 Performance Segmentation")
-
-if not filtered_df.empty:
-    # Calculate quartiles
-    grand_totals = filtered_df.groupby('roll_number')['grand_total'].max()
-    quartiles = pd.cut(grand_totals, bins=4, labels=['Q4 (Low)', 'Q3', 'Q2', 'Q1 (High)'])
-    quartile_counts = quartiles.value_counts().sort_index()
-    
-    fig_quartiles = px.pie(
-        values=quartile_counts.values,
-        names=quartile_counts.index,
-        title="🥧 Performance Quartile Distribution",
-        color_discrete_sequence=px.colors.sequential.RdBu
-    )
-    st.plotly_chart(fig_quartiles, use_container_width=True)
-
-# ---------------------------------------------------------
 # EXPORT AND REPORTING
 # ---------------------------------------------------------
 st.header("📥 Export Analytics")
