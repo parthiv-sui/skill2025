@@ -42,6 +42,7 @@ db = firestore.client()
 # LOAD AND PROCESS DATA
 # ---------------------------------------------------------
 @st.cache_data
+@st.cache_data
 def load_all_evaluations():
     """Load all student evaluations from Firestore"""
     try:
@@ -52,7 +53,9 @@ def load_all_evaluations():
             data = doc.to_dict()
             evaluation = data.get("Evaluation", {})
             
-            if evaluation:  # Only include evaluated students
+            # Include ALL students, even if not fully evaluated
+            # But only include documents that have some evaluation data
+            if evaluation:  # This checks if evaluation exists, not if it's complete
                 student_info = {
                     'roll_number': data.get('Roll', 'Unknown'),
                     'section': data.get('Section', 'Unknown'),
