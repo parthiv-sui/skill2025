@@ -4,12 +4,35 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
 from io import StringIO
+import time
+from datetime import datetime
+
+# ---------------------------------------------------------
+# CACHE CLEARANCE FUNCTION
+# ---------------------------------------------------------
+def clear_all_caches():
+    """Clear all caches to force data refresh"""
+    try:
+        # Clear streamlit caches
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        return True
+    except Exception as e:
+        st.error(f"Cache clearance warning: {e}")
+        return False
 
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
 st.set_page_config(page_title="Faculty Evaluation Dashboard", layout="wide")
 st.title("👩‍🏫 Faculty Evaluation Dashboard")
+
+# Add refresh button at the top
+col1, col2 = st.columns([4, 1])
+with col2:
+    if st.button("🔄 Clear Cache & Refresh"):
+        clear_all_caches()
+        st.rerun()
 
 # ---------------------------------------------------------
 # FIREBASE INIT
@@ -76,6 +99,7 @@ def get_scale_options(qid):
 # ---------------------------------------------------------
 # LOAD FRESH DATA FUNCTION
 # ---------------------------------------------------------
+@st.cache_data(ttl=30)  # Cache for only 30 seconds
 def load_all_student_data():
     """Load all student data from Firebase"""
     roll_map = {}
@@ -345,8 +369,8 @@ with col5:
 # Show progress with enhanced status indicators
 st.subheader("📋 Evaluation Status Overview")
 
-# Display all tests - DEBUG INFO
-st.write(f"**Debug:** Found {len(progress_data)} tests for student {selected_roll}")
+# Display all tests
+st.write(f"**Student:** {selected_roll} | **Total Tests:** {len(progress_data)}")
 
 # Create a more visual status table
 for test_data in progress_data:
@@ -381,9 +405,29 @@ with st.expander("📖 Status Legend"):
 st.write("---")
 
 # ---------------------------------------------------------
-# SAVE EVALUATION - FIXED VERSION
+# DEBUG: VERIFY FIREBASE DATA
 # ---------------------------------------------------------
-if st.button("💾 Save Evaluation & Update Grand Total"):
+with st.expander("🔍 Debug: Verify Current Firebase Data"):
+    try:
+        doc_ref = db.collection("student_responses").document(doc_id)
+        firebase_data = doc_ref.get().to_dict()
+        if firebase_data and 'Evaluation' in firebase_data:
+            st.write("✅ Current Firebase Evaluation Data:")
+            st.json(firebase_data['Evaluation'])
+            
+            # Show data freshness
+            evaluated_at = firebase_data['Evaluation'].get('evaluated_at')
+            if evaluated_at:
+                st.write(f"**Last Saved:** {evaluated_at}")
+        else:
+            st.write("❌ No evaluation data in Firebase")
+    except Exception as e:
+        st.error(f"Debug error: {e}")
+
+# ---------------------------------------------------------
+# SAVE EVALUATION - ENHANCED WITH CACHE CLEARANCE
+# ---------------------------------------------------------
+if st.button("💾 Save Evaluation & Update Grand Total", type="primary"):
     try:
         # Save current test evaluation
         evaluation_data = {
@@ -409,13 +453,22 @@ if st.button("💾 Save Evaluation & Update Grand Total"):
             })
         
         st.success(f"✅ Evaluation saved for {selected_test}!")
+        st.success(f"📊 Grand Total Updated: {real_time_grand_total}")
         st.balloons()
         
-        # Force complete reload using st.rerun()
+        # CRITICAL: Clear caches and force complete reload
+        if clear_all_caches():
+            st.info("🔄 Caches cleared - refreshing data...")
+        
+        # Add a small delay to ensure Firebase updates
+        time.sleep(2)
+        
+        # Force complete reload
         st.rerun()
         
     except Exception as e:
         st.error(f"❌ Save failed: {e}")
+        st.error("Please try again or check Firebase connection")
 
 # ---------------------------------------------------------
 # EXPORT TO CSV
@@ -487,3 +540,18 @@ if st.button("📊 Download Complete Evaluation Report"):
     # Preview
     st.subheader("📋 Report Preview")
     st.dataframe(final_df)
+
+# ---------------------------------------------------------
+# SIDEBAR STATUS
+# ---------------------------------------------------------
+st.sidebar.write("---")
+st.sidebar.subheader("🔄 System Status")
+st.sidebar.write(f"Data loaded: {datetime.now().strftime('%H:%M:%S')}")
+st.sidebar.write(f"Students loaded: {len(roll_map)}")
+st.sidebar.write(f"Tests for {selected_roll}: {len(student_data)}")
+
+if st.sidebar.button("🔄 Refresh Data Only"):
+    clear_all_caches()
+    st.success("Data refresh triggered!")
+    time.sleep(1)
+    st.rerun()
