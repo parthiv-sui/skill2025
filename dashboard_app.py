@@ -150,51 +150,382 @@ with col4:
 # ---------------------------------------------------------
 # INDIVIDUAL STUDENT ANALYSIS
 # ---------------------------------------------------------
-st.header("👨‍🎓 Individual Student Performance")
+# ---------------------------------------------------------
+# COMPREHENSIVE INSIGHTS & RECOMMENDATIONS - SINGULAR VERSION
+# ---------------------------------------------------------
+st.header("💡 Individual Student Performance Insights")
 
-if selected_rolls:
-    selected_student = st.selectbox("Select Student for Detailed Analysis:", selected_rolls)
-    
-    student_data = filtered_df[filtered_df['roll_number'] == selected_student]
-    
-    if not student_data.empty:
-        col1, col2 = st.columns(2)
+if not filtered_df.empty and selected_rolls:
+    # For individual student analysis, use data only for the selected student
+    if len(selected_rolls) == 1:
+        # SINGLE STUDENT ANALYSIS
+        student_df = filtered_df[filtered_df['roll_number'] == selected_rolls[0]]
         
-        with col1:
-            # Student performance across tests
-            fig_tests = px.bar(
-                student_data, 
-                x='section', 
-                y='final_total',
-                title=f"📊 {selected_student} - Performance by Test",
-                color='final_total',
-                color_continuous_scale='viridis'
-            )
-            fig_tests.update_layout(showlegend=False)
-            st.plotly_chart(fig_tests, use_container_width=True)
+        # Calculate metrics for this specific student
+        avg_mcq = student_df['auto_mcq'].mean()
+        avg_likert = student_df['auto_likert'].mean()
+        avg_manual = student_df['manual_total'].mean()
+        overall_avg = student_df['final_total'].mean()
         
-        with col2:
-            # Score composition for student
-            test_scores = student_data[['section', 'auto_mcq', 'auto_likert', 'manual_total']].set_index('section')
-            fig_composition = go.Figure()
+        # Test-specific averages for this student
+        test_analysis = student_df.groupby('section').agg({
+            'final_total': 'mean',
+            'auto_mcq': 'mean',
+            'auto_likert': 'mean', 
+            'manual_total': 'mean'
+        }).round(1)
+        
+        student_name = selected_rolls[0]
+        
+    else:
+        # MULTIPLE STUDENTS ANALYSIS (keep plural)
+        avg_mcq = filtered_df['auto_mcq'].mean()
+        avg_likert = filtered_df['auto_likert'].mean()
+        avg_manual = filtered_df['manual_total'].mean()
+        overall_avg = filtered_df['final_total'].mean()
+        test_analysis = filtered_df.groupby('section').agg({
+            'final_total': 'mean',
+            'auto_mcq': 'mean',
+            'auto_likert': 'mean', 
+            'manual_total': 'mean'
+        }).round(1)
+        student_name = "Selected Students"
+
+    # Create a visually appealing layout
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # MAIN INSIGHTS CARD
+        st.subheader(f"🎯 {student_name} - Executive Summary")
+        
+        # Performance narrative
+        st.markdown("### 📊 Performance Overview")
+        
+        # Create a performance score card
+        score_col1, score_col2, score_col3, score_col4 = st.columns(4)
+        with score_col1:
+            st.metric("Overall Score", f"{overall_avg:.1f}")
+        with score_col2:
+            st.metric("Analytical", f"{avg_mcq:.1f}")
+        with score_col3:
+            st.metric("Adaptability", f"{avg_likert:.1f}")
+        with score_col4:
+            st.metric("Communication", f"{avg_manual:.1f}")
+        
+        # DYNAMIC PERFORMANCE NARRATIVE - SINGULAR VERSION
+        if len(selected_rolls) == 1:
+            # SINGULAR LANGUAGE FOR INDIVIDUAL STUDENT
+            if avg_likert >= 20 and avg_mcq >= 15 and avg_manual >= 10:
+                narrative = f"""
+                <b>{student_name}</b> is demonstrating <b>excellent balanced performance</b> across all assessment domains with an overall average of {overall_avg:.1f}. 
+                The strong adaptability score ({avg_likert:.1f}) indicates great learning agility, while solid analytical ({avg_mcq:.1f}) 
+                and communication skills ({avg_manual:.1f}) show well-rounded development.
+                """
+                tone_color = "#4CAF50"
+                title = "🎉 Exceptional All-Round Performance"
+            elif avg_likert >= 20:
+                narrative = f"""
+                <b>{student_name}</b> shows <b>strong adaptability and learning agility</b> ({avg_likert:.1f}) with an overall score of {overall_avg:.1f}. 
+                While adaptability is a key strength, there are opportunities to enhance analytical thinking ({avg_mcq:.1f}) 
+                and communication skills ({avg_manual:.1f}) to achieve more balanced performance.
+                """
+                tone_color = "#2196F3"
+                title = "🚀 Adaptability Strength with Growth Opportunities"
+            else:
+                narrative = f"""
+                With an overall score of {overall_avg:.1f}, <b>{student_name}</b> is building foundational skills across adaptability ({avg_likert:.1f}), 
+                analytical thinking ({avg_mcq:.1f}), and communication ({avg_manual:.1f}). Targeted focus on conceptual understanding 
+                and skill application can drive significant improvement.
+                """
+                tone_color = "#FF9800"
+                title = "📚 Foundational Development Focus Needed"
+        else:
+            # PLURAL LANGUAGE FOR MULTIPLE STUDENTS
+            if avg_likert >= 20 and avg_mcq >= 15 and avg_manual >= 10:
+                narrative = f"""
+                Students are demonstrating <b>excellent balanced performance</b> across all assessment domains with an overall average of {overall_avg:.1f}. 
+                The strong adaptability scores ({avg_likert:.1f}) indicate great learning agility, while solid analytical ({avg_mcq:.1f}) 
+                and communication skills ({avg_manual:.1f}) show well-rounded development.
+                """
+                tone_color = "#4CAF50"
+                title = "🎉 Exceptional All-Round Performance"
+            elif avg_likert >= 20:
+                narrative = f"""
+                Students show <b>strong adaptability and learning agility</b> ({avg_likert:.1f}) with an overall score of {overall_avg:.1f}. 
+                While adaptability is a key strength, there are opportunities to enhance analytical thinking ({avg_mcq:.1f}) 
+                and communication skills ({avg_manual:.1f}) to achieve more balanced performance.
+                """
+                tone_color = "#2196F3"
+                title = "🚀 Adaptability Strength with Growth Opportunities"
+            else:
+                narrative = f"""
+                With an overall score of {overall_avg:.1f}, students are building foundational skills across adaptability ({avg_likert:.1f}), 
+                analytical thinking ({avg_mcq:.1f}), and communication ({avg_manual:.1f}). Targeted focus on conceptual understanding 
+                and skill application can drive significant improvement.
+                """
+                tone_color = "#FF9800"
+                title = "📚 Foundational Development Focus Needed"
+        
+        st.markdown("---")
+        st.markdown(f"""
+        <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid {tone_color};'>
+        <h4 style='color: {tone_color}; margin-top: 0;'>{title}</h4>
+        <p style='font-size: 16px; line-height: 1.6; color: #333;'>
+        {narrative}
+        </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # TEST-WISE PERFORMANCE BREAKDOWN
+        st.markdown("### 🎯 Test Performance Analysis")
+        
+        # Create performance cards for each test
+        for test_name in test_analysis.index:
+            test_data = test_analysis.loc[test_name]
+            avg_score = test_data['final_total']
             
-            for test in test_scores.index:
-                scores = test_scores.loc[test]
-                fig_composition.add_trace(go.Bar(
-                    name=test,
-                    x=['MCQ', 'Likert', 'Manual'],
-                    y=[scores['auto_mcq'], scores['auto_likert'], scores['manual_total']],
-                    text=[scores['auto_mcq'], scores['auto_likert'], scores['manual_total']],
-                    textposition='auto',
-                ))
+            # Determine performance level and styling
+            if avg_score >= 80:
+                performance_level = "Excellent"
+                color = "#4CAF50"
+                icon = "🎯"
+                bg_color = "#f0fff0"
+            elif avg_score >= 60:
+                performance_level = "Good"
+                color = "#2196F3"
+                icon = "✅"
+                bg_color = "#f0f8ff"
+            elif avg_score >= 40:
+                performance_level = "Average"
+                color = "#FF9800"
+                icon = "⚠️"
+                bg_color = "#fff8f0"
+            else:
+                performance_level = "Needs Improvement"
+                color = "#F44336"
+                icon = "🚨"
+                bg_color = "#fff0f0"
             
-            fig_composition.update_layout(
-                title=f"🎯 {selected_student} - Score Composition",
-                barmode='group',
-                xaxis_title="Score Type",
-                yaxis_title="Marks"
-            )
-            st.plotly_chart(fig_composition, use_container_width=True)
+            # Create test performance card
+            st.markdown(f"""
+            <div style='background-color: {bg_color}; padding: 15px; border-radius: 10px; border-left: 5px solid {color}; margin: 10px 0;'>
+            <div style='display: flex; justify-content: space-between; align-items: center;'>
+                <div>
+                    <h4 style='color: {color}; margin: 0;'>{icon} {test_name}</h4>
+                    <p style='margin: 5px 0; font-size: 18px; font-weight: bold;'>Score: <span style='color: {color};'>{avg_score}</span> ({performance_level})</p>
+                </div>
+                <div style='text-align: right;'>
+                    <div style='font-size: 24px; color: {color};'>{icon}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Add test-specific insights - SINGULAR VERSION
+            insight_text = ""
+            if "Aptitude" in test_name:
+                mcq_avg = test_data['auto_mcq']
+                if len(selected_rolls) == 1:
+                    insight_text = "• Demonstrates strong analytical thinking and problem-solving skills" if mcq_avg >= 15 else "• Could benefit from strengthening logical reasoning and quantitative analysis"
+                else:
+                    insight_text = "• Strong analytical thinking and problem-solving skills demonstrated" if mcq_avg >= 15 else "• Opportunity to strengthen logical reasoning and quantitative analysis"
+                
+            elif "Adaptability" in test_name:
+                likert_avg = test_data['auto_likert']
+                if len(selected_rolls) == 1:
+                    insight_text = "• Shows excellent learning agility and flexibility in new situations" if likert_avg >= 20 else "• Should develop resilience and adaptability to changing circumstances"
+                else:
+                    insight_text = "• Excellent learning agility and flexibility in new situations" if likert_avg >= 20 else "• Develop resilience and adaptability to changing circumstances"
+                
+            elif "Communication Skills - Objective" in test_name:
+                mcq_avg = test_data['auto_mcq']
+                if len(selected_rolls) == 1:
+                    insight_text = "• Has a solid foundation in language fundamentals and comprehension" if mcq_avg >= 10 else "• Should build vocabulary and grammar fundamentals for better expression"
+                else:
+                    insight_text = "• Solid foundation in language fundamentals and comprehension" if mcq_avg >= 10 else "• Build vocabulary and grammar fundamentals for better expression"
+                
+            elif "Communication Skills - Descriptive" in test_name:
+                manual_avg = test_data['manual_total']
+                if len(selected_rolls) == 1:
+                    insight_text = "• Demonstrates effective written expression and structured communication" if manual_avg >= 15 else "• Should practice organizing thoughts and expressing ideas clearly in writing"
+                else:
+                    insight_text = "• Effective written expression and structured communication" if manual_avg >= 15 else "• Practice organizing thoughts and expressing ideas clearly in writing"
+            
+            st.markdown(f"<p style='margin: 10px 0; color: #666;'>{insight_text}</p>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+    
+    with col2:
+        # RECOMMENDATIONS & ACTION PLAN
+        if len(selected_rolls) == 1:
+            st.subheader(f"🚀 Action Plan for {student_name}")
+        else:
+            st.subheader("🚀 Group Action Plan")
+        
+        # Generate recommendations first
+        recommendations = []
+        
+        # Dynamic recommendations based on actual performance
+        if avg_mcq < 15:
+            if len(selected_rolls) == 1:
+                recommendations.append({
+                    "title": "Strengthen Analytical Thinking",
+                    "icon": "🧠",
+                    "priority": "High",
+                    "details": "Practice logical reasoning and problem-solving exercises"
+                })
+            else:
+                recommendations.append({
+                    "title": "Strengthen Analytical Thinking",
+                    "icon": "🧠",
+                    "priority": "High",
+                    "details": "Students should practice logical reasoning exercises"
+                })
+        
+        if avg_likert < 20:
+            if len(selected_rolls) == 1:
+                recommendations.append({
+                    "title": "Develop Adaptability", 
+                    "icon": "🔄",
+                    "priority": "Medium" if avg_likert >= 15 else "High",
+                    "details": "Scenario-based learning and flexibility training"
+                })
+            else:
+                recommendations.append({
+                    "title": "Develop Adaptability", 
+                    "icon": "🔄",
+                    "priority": "Medium" if avg_likert >= 15 else "High",
+                    "details": "Students need scenario-based learning practice"
+                })
+        
+        if avg_manual < 10:
+            if len(selected_rolls) == 1:
+                recommendations.append({
+                    "title": "Enhance Communication",
+                    "icon": "✍️",
+                    "priority": "High", 
+                    "details": "Structured writing practice and expression exercises"
+                })
+            else:
+                recommendations.append({
+                    "title": "Enhance Communication",
+                    "icon": "✍️",
+                    "priority": "High", 
+                    "details": "Students need structured writing practice"
+                })
+        
+        # Add positive reinforcement for strengths
+        if avg_likert >= 20:
+            if len(selected_rolls) == 1:
+                recommendations.append({
+                    "title": "Leverage Adaptability Strength",
+                    "icon": "⭐",
+                    "priority": "Low",
+                    "details": "Apply learning agility to other skill areas"
+                })
+            else:
+                recommendations.append({
+                    "title": "Leverage Adaptability Strength",
+                    "icon": "⭐",
+                    "priority": "Low",
+                    "details": "Students can apply learning agility to other areas"
+                })
+        
+        if avg_mcq >= 15:
+            if len(selected_rolls) == 1:
+                recommendations.append({
+                    "title": "Build on Analytical Skills", 
+                    "icon": "📊",
+                    "priority": "Low",
+                    "details": "Tackle more complex problem-solving challenges"
+                })
+            else:
+                recommendations.append({
+                    "title": "Build on Analytical Skills", 
+                    "icon": "📊",
+                    "priority": "Low",
+                    "details": "Students can tackle complex problem-solving"
+                })
+        
+        # If no specific recommendations, add general one
+        if not recommendations:
+            if len(selected_rolls) == 1:
+                recommendations.append({
+                    "title": "Maintain Current Progress",
+                    "icon": "✅",
+                    "priority": "Low", 
+                    "details": "Continue with current learning strategies"
+                })
+            else:
+                recommendations.append({
+                    "title": "Maintain Current Progress",
+                    "icon": "✅",
+                    "priority": "Low", 
+                    "details": "Students should continue current strategies"
+                })
+        
+        # Priority Recommendations
+        st.markdown("""
+        <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px;'>
+        <h4 style='color: white; margin-top: 0;'>🎯 Priority Actions</h4>
+        """, unsafe_allow_html=True)
+        
+        # Display recommendations
+        for i, rec in enumerate(recommendations[:4]):
+            priority_color = {"High": "#FF6B6B", "Medium": "#FFA726", "Low": "#66BB6A"}
+            
+            st.markdown(f"""
+            <div style='background-color: rgba(255,255,255,0.2); padding: 15px; border-radius: 8px; margin: 10px 0;'>
+                <div style='display: flex; justify-content: space-between; align-items: start;'>
+                    <div style='font-size: 24px; margin-right: 10px;'>{rec['icon']}</div>
+                    <div style='flex-grow: 1;'>
+                        <h5 style='color: white; margin: 0 0 5px 0;'>{rec['title']}</h5>
+                        <p style='color: rgba(255,255,255,0.9); margin: 0; font-size: 14px;'>{rec['details']}</p>
+                    </div>
+                    <div style='background-color: {priority_color[rec['priority']]}; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px;'>
+                        {rec['priority']}
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+        # SKILL DISTRIBUTION VISUALIZATION
+        st.markdown("### 🔧 Skill Mastery Levels")
+        
+        skill_data = {
+            'Category': ['Analytical', 'Adaptability', 'Communication'],
+            'Score': [avg_mcq, avg_likert, avg_manual],
+            'Max_Possible': [30, 40, 30],
+            'Color': ['#FF6B6B', '#4ECDC4', '#45B7D1']
+        }
+        skill_df = pd.DataFrame(skill_data)
+        skill_df['Percentage'] = (skill_df['Score'] / skill_df['Max_Possible'] * 100).round(1)
+        
+        # Create a horizontal bar chart for skill distribution
+        fig_skills = go.Figure()
+        
+        for i, row in skill_df.iterrows():
+            fig_skills.add_trace(go.Bar(
+                y=[row['Category']],
+                x=[row['Percentage']],
+                orientation='h',
+                name=row['Category'],
+                marker_color=row['Color'],
+                text=[f"{row['Percentage']}%"],
+                textposition='auto',
+                hovertemplate=f"<b>{row['Category']}</b><br>Score: {row['Score']}<br>Percentage: {row['Percentage']}%<extra></extra>"
+            ))
+        
+        fig_skills.update_layout(
+            title="Skill Mastery Percentage",
+            xaxis=dict(range=[0, 100], title="Mastery %"),
+            yaxis_title="Skill Area",
+            showlegend=False,
+            height=250,
+            margin=dict(l=50, r=50, t=50, b=50)
+        )
+        
+        st.plotly_chart(fig_skills, use_container_width=True)
 
 # ---------------------------------------------------------
 # SCORE COMPOSITION ANALYSIS
