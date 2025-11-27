@@ -1,5 +1,310 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import firebase_admin
+from firebase_admin import credentials, firestore
+import numpy as np
+from datetime import datetime
+import json
+
 # ---------------------------------------------------------
-# COMPREHENSIVE INSIGHTS & RECOMMENDATIONS - FIXED VERSION
+# PAGE CONFIG
+# ---------------------------------------------------------
+st.set_page_config(
+    page_title="Faculty Evaluation Analytics Dashboard",
+    page_icon="📊",
+    layout="wide"
+)
+
+st.title("🎓 Faculty Evaluation Analytics Dashboard")
+st.markdown("### Comprehensive Performance Insights & Visualizations")
+
+# ---------------------------------------------------------
+# FIREBASE INIT
+# ---------------------------------------------------------
+if not firebase_admin._apps:
+    try:
+        if "firebase" in st.secrets:
+            cfg = dict(st.secrets["firebase"])
+        else:
+            with open("firebase_key.json") as f:
+                cfg = json.load(f)
+        cred = credentials.Certificate(cfg)
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        st.error(f"Firebase init failed: {e}")
+        st.stop()
+
+db = firestore.client()
+
+# ---------------------------------------------------------
+# LOAD AND PROCESS DATA
+# ---------------------------------------------------------
+@st.cache_data
+def load_all_evaluations():
+    """Load all student evaluations from Firestore - include partially evaluated students"""
+    try:
+        docs = db.collection("student_responses").stream()
+        
+        students_data = []
+        
+        for doc in docs:
+            data = doc.to_dict()
+            roll_number = data.get('Roll', '').strip()
+            section = data.get('Section', '').strip()
+            
+            if not roll_number or roll_number == 'Unknown':
+                continue
+                
+            evaluation = data.get("Evaluation", {})
+            
+            # Include ALL documents, but mark evaluation status
+            student_info = {
+                'roll_number': roll_number,
+                'section': section,
+                'auto_mcq': evaluation.get('auto_mcq', 0),
+                'auto_likert': evaluation.get('auto_likert', 0),
+                'manual_total': evaluation.get('manual_total', 0),
+                'final_total': evaluation.get('final_total', 0),
+                'grand_total': evaluation.get('grand_total', 0),
+                'doc_id': doc.id,
+                'is_fully_evaluated': bool(evaluation)  # Track evaluation status
+            }
+            students_data.append(student_info)
+        
+        # Debug info
+        if students_data:
+            unique_students = len(set([s['roll_number'] for s in students_data]))
+            evaluated_docs = len([s for s in students_data if s['is_fully_evaluated']])
+            st.sidebar.info(f"📊 Loaded {len(students_data)} test records from {unique_students} students ({evaluated_docs} evaluated)")
+        
+        return pd.DataFrame(students_data)
+        
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        return pd.DataFrame()
+
+# Load data
+df = load_all_evaluations()
+
+if df.empty:
+    st.warning("No evaluation data found. Please evaluate some students first.")
+    st.stop()
+
+# ---------------------------------------------------------
+# SIDEBAR FILTERS
+# ---------------------------------------------------------
+st.sidebar.header("🔍 Filters & Controls")
+
+# Add refresh button
+if st.sidebar.button("🔄 Clear Cache & Refresh Data"):
+    st.cache_data.clear()
+    st.rerun()
+
+# Roll number filter
+all_rolls = sorted(df['roll_number'].unique())
+selected_rolls = st.sidebar.multiselect(
+    "Select Students:",
+    options=all_rolls,
+    default=all_rolls[:min(5, len(all_rolls))]  # Show first 5 by default
+)
+
+# Test type filter
+all_tests = sorted(df['section'].unique())
+selected_tests = st.sidebar.multiselect(
+    "Select Tests:",
+    options=all_tests,
+    default=all_tests
+)
+
+# Filter data
+filtered_df = df[
+    (df['roll_number'].isin(selected_rolls)) & 
+    (df['section'].isin(selected_tests))
+]
+
+# ---------------------------------------------------------
+# KEY METRICS DASHBOARD
+# ---------------------------------------------------------
+st.header("📈 Key Performance Metrics")
+
+# Calculate overall metrics
+total_students = len(filtered_df['roll_number'].unique())
+total_tests = len(filtered_df)
+avg_grand_total = filtered_df.groupby('roll_number')['grand_total'].max().mean()
+top_performer = filtered_df.loc[filtered_df.groupby('roll_number')['grand_total'].idxmax()].nlargest(1, 'grand_total')
+
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.metric("Total Students", total_students)
+with col2:
+    st.metric("Total Tests Evaluated", total_tests)
+with col3:
+    st.metric("Average Grand Total", f"{avg_grand_total:.1f}")
+with col4:
+    if not top_performer.empty:
+        st.metric("Top Performer", top_performer.iloc[0]['roll_number'], 
+                 delta=f"Score: {top_performer.iloc[0]['grand_total']}")
+
+# ---------------------------------------------------------
+# INDIVIDUAL STUDENT ANALYSIS
+# ---------------------------------------------------------
+st.header("👨‍🎓 Individual Student Performance")
+
+if selected_rolls:
+    selected_student = st.selectbox("Select Student for Detailed Analysis:", selected_rolls)
+    
+    student_data = filtered_df[filtered_df['roll_number'] == selected_student]
+    
+    if not student_data.empty:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Student performance across tests
+            fig_tests = px.bar(
+                student_data, 
+                x='section', 
+                y='final_total',
+                title=f"📊 {selected_student} - Performance by Test",
+                color='final_total',
+                color_continuous_scale='viridis'
+            )
+            fig_tests.update_layout(showlegend=False)
+            st.plotly_chart(fig_tests, use_container_width=True)
+        
+        with col2:
+            # Score composition for student
+            test_scores = student_data[['section', 'auto_mcq', 'auto_likert', 'manual_total']].set_index('section')
+            fig_composition = go.Figure()
+            
+            for test in test_scores.index:
+                scores = test_scores.loc[test]
+                fig_composition.add_trace(go.Bar(
+                    name=test,
+                    x=['MCQ', 'Likert', 'Manual'],
+                    y=[scores['auto_mcq'], scores['auto_likert'], scores['manual_total']],
+                    text=[scores['auto_mcq'], scores['auto_likert'], scores['manual_total']],
+                    textposition='auto',
+                ))
+            
+            fig_composition.update_layout(
+                title=f"🎯 {selected_student} - Score Composition",
+                barmode='group',
+                xaxis_title="Score Type",
+                yaxis_title="Marks"
+            )
+            st.plotly_chart(fig_composition, use_container_width=True)
+
+# ---------------------------------------------------------
+# SCORE COMPOSITION ANALYSIS
+# ---------------------------------------------------------
+st.header("🎯 Score Composition Analysis")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    # Overall score type distribution
+    total_mcq = filtered_df['auto_mcq'].sum()
+    total_likert = filtered_df['auto_likert'].sum()
+    total_manual = filtered_df['manual_total'].sum()
+    
+    composition_data = pd.DataFrame({
+        'Type': ['MCQ', 'Likert', 'Manual'],
+        'Total Marks': [total_mcq, total_likert, total_manual]
+    })
+    
+    fig_composition = px.bar(
+        composition_data,
+        x='Type',
+        y='Total Marks',
+        title="📊 Total Marks by Assessment Type",
+        color='Type',
+        color_discrete_sequence=px.colors.qualitative.Set3
+    )
+    st.plotly_chart(fig_composition, use_container_width=True)
+
+with col2:
+    # Test-wise score type breakdown
+    test_breakdown = filtered_df.groupby('section')[['auto_mcq', 'auto_likert', 'manual_total']].sum().reset_index()
+    test_breakdown_melted = test_breakdown.melt(
+        id_vars=['section'], 
+        value_vars=['auto_mcq', 'auto_likert', 'manual_total'],
+        var_name='Score Type', 
+        value_name='Marks'
+    )
+    
+    # Clean up score type names
+    test_breakdown_melted['Score Type'] = test_breakdown_melted['Score Type'].replace({
+        'auto_mcq': 'MCQ',
+        'auto_likert': 'Likert',
+        'manual_total': 'Manual'
+    })
+    
+    fig_breakdown = px.bar(
+        test_breakdown_melted,
+        x='section',
+        y='Marks',
+        color='Score Type',
+        title="🎨 Score Type Breakdown by Test",
+        barmode='stack'
+    )
+    st.plotly_chart(fig_breakdown, use_container_width=True)
+
+# ---------------------------------------------------------
+# TREND ANALYSIS
+# ---------------------------------------------------------
+st.header("📈 Performance Trends")
+
+if len(selected_rolls) > 1:
+    # Line chart comparing multiple students
+    trend_data = filtered_df.pivot_table(
+        index='section', 
+        columns='roll_number', 
+        values='final_total', 
+        aggfunc='max'
+    ).reset_index()
+    
+    fig_trend = go.Figure()
+    for student in selected_rolls[:5]:  # Limit to 5 students for clarity
+        if student in trend_data.columns:
+            fig_trend.add_trace(go.Scatter(
+                x=trend_data['section'],
+                y=trend_data[student],
+                mode='lines+markers',
+                name=student
+            ))
+    
+    fig_trend.update_layout(
+        title="📈 Performance Trends Across Tests",
+        xaxis_title="Tests",
+        yaxis_title="Scores",
+        hovermode='x unified'
+    )
+    st.plotly_chart(fig_trend, use_container_width=True)
+
+# ---------------------------------------------------------
+# RANKING AND LEADERBOARD (SIMPLIFIED)
+# ---------------------------------------------------------
+st.header("🏆 Student Rankings")
+
+# Calculate rankings
+leaderboard = filtered_df.groupby('roll_number').agg({
+    'grand_total': 'max',
+    'section': 'count'
+}).rename(columns={'section': 'tests_completed'}).reset_index()
+
+leaderboard = leaderboard.nlargest(10, 'grand_total')  # Top 10 students
+
+# Display as a clean table instead of chart
+st.subheader("Top 10 Performers")
+leaderboard_display = leaderboard[['roll_number', 'grand_total', 'tests_completed']].rename(
+    columns={'roll_number': 'Student', 'grand_total': 'Total Score', 'tests_completed': 'Tests Completed'}
+)
+st.dataframe(leaderboard_display, use_container_width=True)
+
+# ---------------------------------------------------------
+# COMPREHENSIVE INSIGHTS & RECOMMENDATIONS
 # ---------------------------------------------------------
 st.header("💡 Comprehensive Performance Insights & Recommendations")
 
@@ -18,71 +323,6 @@ if not filtered_df.empty:
         'manual_total': 'mean'
     }).round(1)
     
-    # DYNAMIC MESSAGING SYSTEM
-    def generate_performance_narrative(avg_mcq, avg_likert, avg_manual, overall_avg, test_analysis):
-        """Generate dynamic narrative based on actual performance data"""
-        
-        # Analyze performance patterns
-        strong_adaptability = avg_likert >= 20
-        strong_analytical = avg_mcq >= 15
-        strong_communication = avg_manual >= 10
-        balanced_performance = all([strong_adaptability, strong_analytical, strong_communication])
-        
-        # Count strong areas
-        strong_areas = sum([strong_adaptability, strong_analytical, strong_communication])
-        
-        # Generate narrative based on performance patterns
-        if balanced_performance:
-            return {
-                "title": "🎉 Exceptional All-Round Performance",
-                "narrative": f"""
-                Students are demonstrating <b>excellent balanced performance</b> across all assessment domains with an overall average of {overall_avg:.1f}. 
-                The strong adaptability scores ({avg_likert:.1f}) indicate great learning agility, while solid analytical ({avg_mcq:.1f}) 
-                and communication skills ({avg_manual:.1f}) show well-rounded development. This foundation positions students ideally 
-                for advanced challenges and leadership opportunities.
-                """,
-                "tone": "success"
-            }
-        
-        elif strong_adaptability and strong_areas >= 2:
-            return {
-                "title": "🚀 Strong Foundation with Key Strengths",
-                "narrative": f"""
-                Students show <b>promising performance patterns</b> with particular strength in adaptability and learning agility ({avg_likert:.1f}). 
-                The overall score of {overall_avg:.1f} reflects good foundational skills, with analytical abilities at {avg_mcq:.1f} 
-                and communication at {avg_manual:.1f}. The key opportunity lies in bringing all skill areas to the same high standard 
-                as the demonstrated adaptability capabilities.
-                """,
-                "tone": "info"
-            }
-        
-        elif strong_adaptability:
-            return {
-                "title": "🔄 Adaptability Strength with Growth Opportunities",
-                "narrative": f"""
-                The analysis reveals <b>strong adaptability potential</b> ({avg_likert:.1f}) alongside an overall score of {overall_avg:.1f}. 
-                While students show excellent learning agility and flexibility, there are significant opportunities to strengthen 
-                analytical thinking ({avg_mcq:.1f}) and communication skills ({avg_manual:.1f}). Focusing on these areas will create 
-                more balanced and comprehensive skill development.
-                """,
-                "tone": "warning"
-            }
-        
-        else:
-            return {
-                "title": "📚 Foundational Development Focus Needed",
-                "narrative": f"""
-                With an overall score of {overall_avg:.1f}, students are building their foundational skills across adaptability ({avg_likert:.1f}), 
-                analytical thinking ({avg_mcq:.1f}), and communication ({avg_manual:.1f}). This represents an important developmental 
-                phase where targeted interventions in conceptual understanding and skill application can drive significant 
-                improvement. The current scores provide a clear baseline for measurable growth.
-                """,
-                "tone": "warning"
-            }
-    
-    # Generate dynamic narrative
-    performance_insight = generate_performance_narrative(avg_mcq, avg_likert, avg_manual, overall_avg, test_analysis)
-    
     # Create a visually appealing layout
     col1, col2 = st.columns([2, 1])
     
@@ -90,40 +330,55 @@ if not filtered_df.empty:
         # MAIN INSIGHTS CARD
         st.subheader("🎯 Executive Summary")
         
-        insights_container = st.container()
-        with insights_container:
-            # Performance narrative with dynamic content
-            st.markdown(f"### {performance_insight['title']}")
-            
-            # Create a performance score card
-            score_col1, score_col2, score_col3, score_col4 = st.columns(4)
-            with score_col1:
-                st.metric("Overall Score", f"{overall_avg:.1f}")
-            with score_col2:
-                st.metric("Analytical", f"{avg_mcq:.1f}")
-            with score_col3:
-                st.metric("Adaptability", f"{avg_likert:.1f}")
-            with score_col4:
-                st.metric("Communication", f"{avg_manual:.1f}")
-            
-            # Dynamic performance narrative
-            st.markdown("---")
-            
-            # Color code based on performance tone
-            tone_colors = {
-                "success": "#4CAF50",
-                "info": "#2196F3", 
-                "warning": "#FF9800"
-            }
-            
-            st.markdown(f"""
-            <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid {tone_colors[performance_insight['tone']]};'>
-            <h4 style='color: {tone_colors[performance_insight['tone']]}; margin-top: 0;'>📈 Performance Analysis</h4>
-            <p style='font-size: 16px; line-height: 1.6; color: #333;'>
-            {performance_insight['narrative']}
-            </p>
-            </div>
-            """, unsafe_allow_html=True)
+        # Performance narrative
+        st.markdown("### 📊 Overall Performance Overview")
+        
+        # Create a performance score card
+        score_col1, score_col2, score_col3, score_col4 = st.columns(4)
+        with score_col1:
+            st.metric("Overall Score", f"{overall_avg:.1f}")
+        with score_col2:
+            st.metric("Analytical", f"{avg_mcq:.1f}")
+        with score_col3:
+            st.metric("Adaptability", f"{avg_likert:.1f}")
+        with score_col4:
+            st.metric("Communication", f"{avg_manual:.1f}")
+        
+        # Dynamic performance narrative based on scores
+        if avg_likert >= 20 and avg_mcq >= 15 and avg_manual >= 10:
+            narrative = f"""
+            Students are demonstrating <b>excellent balanced performance</b> across all assessment domains with an overall average of {overall_avg:.1f}. 
+            The strong adaptability scores ({avg_likert:.1f}) indicate great learning agility, while solid analytical ({avg_mcq:.1f}) 
+            and communication skills ({avg_manual:.1f}) show well-rounded development.
+            """
+            tone_color = "#4CAF50"
+            title = "🎉 Exceptional All-Round Performance"
+        elif avg_likert >= 20:
+            narrative = f"""
+            Students show <b>strong adaptability and learning agility</b> ({avg_likert:.1f}) with an overall score of {overall_avg:.1f}. 
+            While adaptability is a key strength, there are opportunities to enhance analytical thinking ({avg_mcq:.1f}) 
+            and communication skills ({avg_manual:.1f}) to achieve more balanced performance.
+            """
+            tone_color = "#2196F3"
+            title = "🚀 Adaptability Strength with Growth Opportunities"
+        else:
+            narrative = f"""
+            With an overall score of {overall_avg:.1f}, students are building foundational skills across adaptability ({avg_likert:.1f}), 
+            analytical thinking ({avg_mcq:.1f}), and communication ({avg_manual:.1f}). Targeted focus on conceptual understanding 
+            and skill application can drive significant improvement.
+            """
+            tone_color = "#FF9800"
+            title = "📚 Foundational Development Focus Needed"
+        
+        st.markdown("---")
+        st.markdown(f"""
+        <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 5px solid {tone_color};'>
+        <h4 style='color: {tone_color}; margin-top: 0;'>{title}</h4>
+        <p style='font-size: 16px; line-height: 1.6; color: #333;'>
+        {narrative}
+        </p>
+        </div>
+        """, unsafe_allow_html=True)
         
         # TEST-WISE PERFORMANCE BREAKDOWN
         st.markdown("### 🎯 Detailed Test Analysis")
@@ -244,9 +499,14 @@ if not filtered_df.empty:
                 "details": "Tackle more complex problem-solving challenges"
             })
         
-        # Sort by priority
-        priority_order = {"High": 1, "Medium": 2, "Low": 3}
-        recommendations.sort(key=lambda x: priority_order[x["priority"]])
+        # If no specific recommendations, add general one
+        if not recommendations:
+            recommendations.append({
+                "title": "Maintain Current Progress",
+                "icon": "✅",
+                "priority": "Low", 
+                "details": "Continue with current learning strategies"
+            })
         
         # Display recommendations
         for i, rec in enumerate(recommendations[:4]):  # Show top 4
@@ -357,3 +617,28 @@ with growth_col3:
     <p><b>{mastery_goal}</b><br>Achieve comprehensive mastery</p>
     </div>
     """, unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# EXPORT AND REPORTING
+# ---------------------------------------------------------
+st.header("📥 Export Analytics")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    # Summary statistics
+    st.subheader("📋 Summary Statistics")
+    summary_stats = filtered_df.groupby('section')['final_total'].agg(['mean', 'median', 'std', 'min', 'max']).round(2)
+    st.dataframe(summary_stats)
+
+with col2:
+    # Raw data export
+    st.subheader("📤 Export Data")
+    if st.button("📊 Download Filtered Data as CSV"):
+        csv = filtered_df.to_csv(index=False)
+        st.download_button(
+            label="⬇️ Download CSV",
+            data=csv,
+            file_name=f"evaluation_analytics_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
