@@ -7,7 +7,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import numpy as np
 from datetime import datetime
-import json  # Add this import
+import json
 
 # ---------------------------------------------------------
 # PAGE CONFIG
@@ -89,53 +89,9 @@ def load_all_evaluations():
 # Load data
 df = load_all_evaluations()
 
-# ========== ADD DEBUG SECTION ==========
-st.sidebar.header("🔍 DEBUG: Data Verification")
-
-# Check specific student data
-target_student = "25BBAB152"  # Change this to your student's roll number
-if target_student in df['roll_number'].values:
-    st.sidebar.success(f"✅ Student {target_student} FOUND in data")
-    student_records = df[df['roll_number'] == target_student]
-    st.sidebar.write(f"Number of test records: {len(student_records)}")
-    
-    for _, record in student_records.iterrows():
-        st.sidebar.write(f"**{record['section']}**:")
-        st.sidebar.write(f"  - Final Total: {record['final_total']}")
-        st.sidebar.write(f"  - Auto MCQ: {record['auto_mcq']}")
-        st.sidebar.write(f"  - Auto Likert: {record['auto_likert']}")
-        st.sidebar.write(f"  - Manual Total: {record['manual_total']}")
-        st.sidebar.write(f"  - Grand Total: {record['grand_total']}")
-        st.sidebar.write(f"  - Evaluated: {record['is_fully_evaluated']}")
-        st.sidebar.write("  ---")
-else:
-    st.sidebar.error(f"❌ Student {target_student} NOT FOUND in loaded data")
-
-# Check what's actually in Firebase for this student
-st.sidebar.header("🔍 Firebase Direct Check")
-try:
-    student_docs = db.collection("student_responses").where("Roll", "==", target_student).stream()
-    doc_count = 0
-    for doc in student_docs:
-        doc_count += 1
-        data = doc.to_dict()
-        evaluation = data.get("Evaluation", {})
-        st.sidebar.write(f"📄 Firebase Document {doc_count}:")
-        st.sidebar.write(f"  - Section: {data.get('Section')}")
-        st.sidebar.write(f"  - Document ID: {doc.id}")
-        st.sidebar.write(f"  - Final Total: {evaluation.get('final_total', 'NOT SAVED')}")
-        st.sidebar.write(f"  - Auto Likert: {evaluation.get('auto_likert', 'NOT SAVED')}")
-        st.sidebar.write(f"  - Grand Total: {evaluation.get('grand_total', 'NOT SAVED')}")
-        st.sidebar.write("  ---")
-    
-    st.sidebar.write(f"Total Firebase docs for {target_student}: {doc_count}")
-except Exception as e:
-    st.sidebar.error(f"Error checking Firebase: {e}")
-
 if df.empty:
     st.warning("No evaluation data found. Please evaluate some students first.")
     st.stop()
-# ========== END DEBUG SECTION ==========
 
 # ---------------------------------------------------------
 # SIDEBAR FILTERS
@@ -242,95 +198,6 @@ if selected_rolls:
             st.plotly_chart(fig_composition, use_container_width=True)
 
 # ---------------------------------------------------------
-# COMPARATIVE ANALYSIS
-# ---------------------------------------------------------
-st.header("📊 Comparative Analysis")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    # Overall performance distribution
-    student_totals = filtered_df.groupby('roll_number')['grand_total'].max()
-    fig_distribution = px.histogram(
-        x=student_totals,
-        title="📈 Overall Score Distribution",
-        labels={'x': 'Grand Total Score', 'y': 'Number of Students'},
-        color_discrete_sequence=['#FF6B6B']
-    )
-    fig_distribution.update_layout(showlegend=False)
-    st.plotly_chart(fig_distribution, use_container_width=True)
-
-with col2:
-    # Test-wise average performance
-    test_avgs = filtered_df.groupby('section')['final_total'].mean().reset_index()
-    fig_test_avg = px.pie(
-        test_avgs,
-        values='final_total',
-        names='section',
-        title="🥧 Average Performance by Test Type",
-        hole=0.4
-    )
-    st.plotly_chart(fig_test_avg, use_container_width=True)
-
-# ---------------------------------------------------------
-# HEATMAP - STUDENT vs TEST PERFORMANCE
-# ---------------------------------------------------------
-st.header("🔥 Performance Heatmap")
-
-# Create pivot table for heatmap
-pivot_data = filtered_df.pivot_table(
-    index='roll_number', 
-    columns='section', 
-    values='final_total', 
-    aggfunc='max'
-).fillna(0)
-
-if not pivot_data.empty:
-    fig_heatmap = px.imshow(
-        pivot_data,
-        title="Student vs Test Performance Heatmap",
-        color_continuous_scale='RdYlGn',
-        aspect="auto"
-    )
-    fig_heatmap.update_layout(
-        xaxis_title="Tests",
-        yaxis_title="Students"
-    )
-    st.plotly_chart(fig_heatmap, use_container_width=True)
-
-# ---------------------------------------------------------
-# TREND ANALYSIS
-# ---------------------------------------------------------
-st.header("📈 Trend Analysis")
-
-if len(selected_rolls) > 1:
-    # Line chart comparing multiple students
-    trend_data = filtered_df.pivot_table(
-        index='section', 
-        columns='roll_number', 
-        values='final_total', 
-        aggfunc='max'
-    ).reset_index()
-    
-    fig_trend = go.Figure()
-    for student in selected_rolls[:5]:  # Limit to 5 students for clarity
-        if student in trend_data.columns:
-            fig_trend.add_trace(go.Scatter(
-                x=trend_data['section'],
-                y=trend_data[student],
-                mode='lines+markers',
-                name=student
-            ))
-    
-    fig_trend.update_layout(
-        title="📈 Performance Trends Across Tests",
-        xaxis_title="Tests",
-        yaxis_title="Scores",
-        hovermode='x unified'
-    )
-    st.plotly_chart(fig_trend, use_container_width=True)
-
-# ---------------------------------------------------------
 # SCORE COMPOSITION ANALYSIS
 # ---------------------------------------------------------
 st.header("🎯 Score Composition Analysis")
@@ -386,9 +253,41 @@ with col2:
     st.plotly_chart(fig_breakdown, use_container_width=True)
 
 # ---------------------------------------------------------
-# RANKING AND LEADERBOARD
+# TREND ANALYSIS
 # ---------------------------------------------------------
-st.header("🏆 Student Leaderboard")
+st.header("📈 Performance Trends")
+
+if len(selected_rolls) > 1:
+    # Line chart comparing multiple students
+    trend_data = filtered_df.pivot_table(
+        index='section', 
+        columns='roll_number', 
+        values='final_total', 
+        aggfunc='max'
+    ).reset_index()
+    
+    fig_trend = go.Figure()
+    for student in selected_rolls[:5]:  # Limit to 5 students for clarity
+        if student in trend_data.columns:
+            fig_trend.add_trace(go.Scatter(
+                x=trend_data['section'],
+                y=trend_data[student],
+                mode='lines+markers',
+                name=student
+            ))
+    
+    fig_trend.update_layout(
+        title="📈 Performance Trends Across Tests",
+        xaxis_title="Tests",
+        yaxis_title="Scores",
+        hovermode='x unified'
+    )
+    st.plotly_chart(fig_trend, use_container_width=True)
+
+# ---------------------------------------------------------
+# RANKING AND LEADERBOARD (SIMPLIFIED)
+# ---------------------------------------------------------
+st.header("🏆 Student Rankings")
 
 # Calculate rankings
 leaderboard = filtered_df.groupby('roll_number').agg({
@@ -398,43 +297,12 @@ leaderboard = filtered_df.groupby('roll_number').agg({
 
 leaderboard = leaderboard.nlargest(10, 'grand_total')  # Top 10 students
 
-fig_leaderboard = px.bar(
-    leaderboard,
-    x='roll_number',
-    y='grand_total',
-    title="🎖️ Top 10 Performers",
-    color='grand_total',
-    color_continuous_scale='thermal',
-    text='grand_total'
+# Display as a clean table instead of chart
+st.subheader("Top 10 Performers")
+leaderboard_display = leaderboard[['roll_number', 'grand_total', 'tests_completed']].rename(
+    columns={'roll_number': 'Student', 'grand_total': 'Total Score', 'tests_completed': 'Tests Completed'}
 )
-fig_leaderboard.update_traces(texttemplate='%{text}', textposition='outside')
-fig_leaderboard.update_layout(showlegend=False)
-st.plotly_chart(fig_leaderboard, use_container_width=True)
-
-# ---------------------------------------------------------
-# EXPORT AND REPORTING
-# ---------------------------------------------------------
-st.header("📥 Export Analytics")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    # Summary statistics
-    st.subheader("📋 Summary Statistics")
-    summary_stats = filtered_df.groupby('section')['final_total'].agg(['mean', 'median', 'std', 'min', 'max']).round(2)
-    st.dataframe(summary_stats)
-
-with col2:
-    # Raw data export
-    st.subheader("📤 Export Data")
-    if st.button("📊 Download Filtered Data as CSV"):
-        csv = filtered_df.to_csv(index=False)
-        st.download_button(
-            label="⬇️ Download CSV",
-            data=csv,
-            file_name=f"evaluation_analytics_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv"
-        )
+st.dataframe(leaderboard_display, use_container_width=True)
 
 # ---------------------------------------------------------
 # INSIGHTS AND RECOMMENDATIONS
@@ -522,33 +390,16 @@ if not filtered_df.empty:
         avg_manual = filtered_df['manual_total'].mean()
         overall_avg = filtered_df['final_total'].mean()
         
-        # Overall performance gauge - CORRECTED
-        # Calculate dynamic range based on actual data
-        max_score = max(60, filtered_df['final_total'].max() * 1.2)  # Add 20% padding
-        min_score = 0
+        # Simple metrics display instead of gauge
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Average MCQ Score", f"{avg_mcq:.1f}")
+        with col2:
+            st.metric("Average Likert Score", f"{avg_likert:.1f}")
+        with col3:
+            st.metric("Average Manual Score", f"{avg_manual:.1f}")
         
-        fig_gauge = go.Figure(go.Indicator(
-            mode = "gauge+number",
-            value = overall_avg,
-            domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': "Overall Performance Score"},
-            gauge = {
-                'axis': {'range': [min_score, max_score]},
-                'bar': {'color': "darkblue"},
-                'steps': [
-                    {'range': [min_score, max_score * 0.4], 'color': "lightcoral"},
-                    {'range': [max_score * 0.4, max_score * 0.7], 'color': "lightyellow"},
-                    {'range': [max_score * 0.7, max_score], 'color': "lightgreen"}
-                ],
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': overall_avg  # Needle points to actual average
-                }
-            }
-        ))
-        fig_gauge.update_layout(height=300)
-        st.plotly_chart(fig_gauge, use_container_width=True)
+        st.metric("Overall Average Score", f"{overall_avg:.1f}")
         
         # Skill category analysis
         st.subheader("🔧 Skill Category Breakdown")
@@ -561,17 +412,8 @@ if not filtered_df.empty:
         skill_df = pd.DataFrame(skill_data)
         skill_df['Percentage'] = (skill_df['Average Score'] / skill_df['Max Possible'] * 100).round(1)
         
-        fig_skills = px.bar(
-            skill_df,
-            x='Category',
-            y='Percentage',
-            title="Skill Category Performance (%)",
-            color='Percentage',
-            color_continuous_scale='RdYlGn',
-            text='Percentage'
-        )
-        fig_skills.update_traces(texttemplate='%{text}%', textposition='outside')
-        st.plotly_chart(fig_skills, use_container_width=True)
+        # Display as table instead of chart
+        st.dataframe(skill_df[['Category', 'Average Score', 'Percentage']], use_container_width=True)
         
         # Top recommendations
         st.subheader("🎯 Top 3 Recommendations")
@@ -610,7 +452,7 @@ with col1:
     st.plotly_chart(fig_box, use_container_width=True)
 
 with col2:
-    # Performance trends
+    # Performance consistency
     st.subheader("📈 Performance Consistency")
     
     # Calculate coefficient of variation (consistency metric)
@@ -632,22 +474,38 @@ with col2:
     
     st.info(f"{consistency_icon} {consistency_msg}")
 
-# Test completion analysis
-st.subheader("🎯 Test Completion & Evaluation Status")
+# Test completion analysis (simplified)
+st.subheader("🎯 Test Completion Status")
 completion_stats = df.groupby('section')['is_fully_evaluated'].mean().round(3) * 100
 completion_df = pd.DataFrame({
     'Test': completion_stats.index,
     'Evaluation Completion %': completion_stats.values
 })
 
-fig_completion = px.bar(
-    completion_df,
-    x='Test',
-    y='Evaluation Completion %',
-    title="Test Evaluation Completion Status",
-    color='Evaluation Completion %',
-    color_continuous_scale='Blues',
-    text='Evaluation Completion %'
-)
-fig_completion.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-st.plotly_chart(fig_completion, use_container_width=True)
+# Display as table instead of chart
+st.dataframe(completion_df, use_container_width=True)
+
+# ---------------------------------------------------------
+# EXPORT AND REPORTING
+# ---------------------------------------------------------
+st.header("📥 Export Analytics")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    # Summary statistics
+    st.subheader("📋 Summary Statistics")
+    summary_stats = filtered_df.groupby('section')['final_total'].agg(['mean', 'median', 'std', 'min', 'max']).round(2)
+    st.dataframe(summary_stats)
+
+with col2:
+    # Raw data export
+    st.subheader("📤 Export Data")
+    if st.button("📊 Download Filtered Data as CSV"):
+        csv = filtered_df.to_csv(index=False)
+        st.download_button(
+            label="⬇️ Download CSV",
+            data=csv,
+            file_name=f"evaluation_analytics_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
